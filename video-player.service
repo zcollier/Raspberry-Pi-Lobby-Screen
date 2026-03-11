@@ -1,0 +1,23 @@
+[Unit]
+Description=Interactive Video Player with GPIO Controls
+After=network.target graphical.target sound.target
+Wants=graphical.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=gpio video input
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=SDL_VIDEODRIVER=x11
+WorkingDirectory=/home/pi/videos
+ExecStart=/usr/bin/python3 /usr/local/bin/video-player.py
+Restart=always
+RestartSec=10
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target
