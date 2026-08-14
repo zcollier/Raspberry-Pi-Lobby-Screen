@@ -12,6 +12,8 @@ This guide walks you through setting up a brand new Raspberry Pi 4 with a blank 
 - HDMI cable and monitor (for initial setup)
 - USB keyboard (for initial setup)
 - Power supply for Raspberry Pi 4
+- 4 momentary pushbuttons and jumper wires (optional — for the physical
+  EXIT/PREV/NEXT/PLAY controls)
 
 ## Step 1: Install Raspberry Pi OS on SD Card
 
@@ -162,17 +164,17 @@ From your computer (if SSH is enabled):
 # Create directory on Pi
 ssh pi@raspberrypi.local "mkdir -p /home/pi/video-player"
 
-# Copy files from your computer
-scp -r /Users/zachcollier/dev/raspberry-pi-media-player/* pi@raspberrypi.local:/home/pi/video-player/
+# Copy files from your computer (run from inside the repo directory)
+scp -r * pi@raspberrypi.local:/home/pi/video-player/
 ```
 
-### Option C: Clone from Git (if you upload to a repository)
+### Option C: Clone from Git
 
 On the Raspberry Pi:
 
 ```bash
 cd /home/pi
-git clone https://github.com/yourusername/raspberry-pi-media-player.git video-player
+git clone https://github.com/zachcollier/VRHS-Lobby-Screen.git video-player
 ```
 
 ### Option D: Manually create files
@@ -195,10 +197,15 @@ cd /home/pi/video-player
 bash install.sh
 ```
 
+This installs `mpv`, `python3-pygame`, and `python3-rpi.gpio`, creates the video
+and state directories, and enables the systemd service.
+
 Then follow the instructions in QUICKSTART.md to:
-1. Copy your video file to `/home/pi/videos/default.mp4`
-2. Configure HDMI settings
-3. Reboot
+1. Copy your video files to `/home/pi/videos/`
+2. Publish `state.json` to the website and verify it with `--check-remote`
+3. Wire the four GPIO buttons (optional — a keyboard works for testing)
+4. Configure HDMI settings
+5. Reboot
 
 ## Troubleshooting
 

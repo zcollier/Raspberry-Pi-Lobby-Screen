@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+#
+# lobby-check — one command to answer "is the lobby screen talking to the website?"
+#
+# Installed to /usr/local/bin/lobby-check by install.sh, so you can run it from
+# anywhere on the Pi by typing:
+#
+#     lobby-check
+#
+# It wraps:  python3 /usr/local/bin/video-player.py --check-remote
+#
+# That command exits before the player's display and GPIO code ever start, so it
+# is safe to run while a video is on screen. Nothing here changes what is playing.
+# --sync only downloads files; it does not switch the screen.
+
+set -uo pipefail
+
+PLAYER=/usr/local/bin/video-player.py
+SERVICE=video-player
+
+usage() {
+    cat <<'EOF'
+lobby-check — check the lobby screen's connection to the website
+
+  lobby-check              service status, then the remote check
+  lobby-check --sync       the above, then download new media immediately
+  lobby-check --logs       the last 50 lines from the player's log
+  lobby-check --follow     watch the player's log live (Ctrl-C to stop)
+  lobby-check --help       this message
+
+Normally the player checks the website for a new selection every 15 seconds and
+for new media files every 5 minutes. --sync just skips that wait.
+EOF
+}
+
+sync=0
+case "${1-}" in
+    ""|-c|--check)   ;;
+    -s|--sync)       sync=1 ;;
+    -l|--logs)       exec journalctl -u "$SERVICE" -n 50 --no-pager ;;
+    -f|--follow)     exec journalctl -u "$SERVICE" -f ;;
+    -h|--help)       usage; exit 0 ;;
+    *) echo "lobby-check: unknown option '$1' — try 'lobby-check --help'" >&2; exit 2 ;;
+esac
+
+if [ ! -f "$PLAYER" ]; then
+    echo "lobby-check: $PLAYER not found." >&2
+    echo "The player is not installed here. Run install.sh from the VRHS-Lobby-Screen folder." >&2
+    exit 1
+fi
+
+# ── Is the player actually running? ──────────────────────────────────────────
+# Worth answering first: if the service is stopped, the remote check below can
+# pass perfectly while the screen sits there showing nothing.
+echo "── Player service ────────────────────────────────────────────"
+if ! command -v systemctl >/dev/null 2>&1; then
+    echo "  (no systemd here — skipping)"
+elif systemctl is-active --quiet "$SERVICE"; then
+    since=$(systemctl show -p ActiveEnterTimestamp --value "$SERVICE" 2>/dev/null)
+    echo "  running${since:+ since $since}"
+else
+    echo "  NOT RUNNING — the screen will not change until it is started:"
+    echo "      sudo systemctl start $SERVICE"
+fi
+echo
+
+# ── The actual check ─────────────────────────────────────────────────────────
+echo "── Website ───────────────────────────────────────────────────"
+python3 "$PLAYER" --check-remote
+rc=$?
+echo
+
+if [ "$sync" -eq 1 ]; then
+    echo "── Downloading anything new ──────────────────────────────────"
+    python3 "$PLAYER" --sync-now
+    rc=$?
+    echo
+fi
+
+if [ "$rc" -ne 0 ]; then
+    cat <<EOF
+The check above reported a problem. The usual causes, in order of likelihood:
+
+  · No network yet. The Pi often boots faster than the school's wifi comes up.
+    Try:  ping -c1 www.vrhsdramaboosters.com
+
+  · state.json is malformed, so the player ignores it and keeps playing whatever
+    is on screen. Open Lobby TVs in the website admin — its System check names
+    the exact problem, and sending any selection rewrites the file cleanly.
+
+  · A file is listed on the website but returns a permission error. The Lobby TVs
+    page flags these as "Not readable" and has a Fix permissions button.
+EOF
+fi
+
+exit "$rc"

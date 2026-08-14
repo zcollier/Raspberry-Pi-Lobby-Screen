@@ -1,7 +1,7 @@
 [Unit]
-Description=Interactive Video Player with GPIO Controls
-After=network.target graphical.target sound.target
-Wants=graphical.target
+Description=VRHS Lobby Screen Video Player
+After=network-online.target graphical.target sound.target
+Wants=network-online.target graphical.target
 
 [Service]
 Type=simple
@@ -11,10 +11,15 @@ SupplementaryGroups=gpio video input
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=SDL_VIDEODRIVER=x11
+# Where the player looks for its remote instructions. Change this if the file moves.
+Environment=REMOTE_STATE_URL=https://www.vrhsdramaboosters.com/lobby/state.json
 WorkingDirectory=/home/pi/videos
 ExecStart=/usr/bin/python3 /usr/local/bin/video-player.py
 Restart=always
-RestartSec=10
+# How long systemd waits before relaunching. This also governs how fast the
+# screen recovers from a genuine crash, so don't set it very high — use
+# "systemctl stop video-player" when you want it to stay down for maintenance.
+RestartSec=60
 KillMode=control-group
 StandardOutput=journal
 StandardError=journal
