@@ -25,7 +25,7 @@ fi
 # so there is nothing to install for it.
 echo "Installing dependencies..."
 sudo apt-get update
-sudo apt-get install -y mpv python3-pygame python3-rpi.gpio
+sudo apt-get install -y mpv python3-pygame python3-gpiozero python3-lgpio python3-rpi.gpio
 
 # Create video directory
 echo "Creating video directory..."

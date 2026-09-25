@@ -701,48 +701,106 @@ class SyncWorker:
 
 GPIO_AVAILABLE = False
 
+# Which library claimed the pins: "gpiozero", "RPi.GPIO", or None.
+GPIO_BACKEND = None
 
-def setup_gpio():
-    global GPIO_AVAILABLE
+# gpiozero Button objects. They must stay referenced or they stop firing.
+_gpio_buttons = []
+
+
+def _pin_events() -> dict:
+    return {
+        PIN_EXIT: EVT_BTN_EXIT,
+        PIN_PREV: EVT_BTN_PREV,
+        PIN_NEXT: EVT_BTN_NEXT,
+        PIN_PLAY: EVT_BTN_PLAY,
+    }
+
+
+def _post_button(evt_type):
     try:
-        import RPi.GPIO as GPIO
+        pygame.event.post(pygame.event.Event(evt_type))
+    except pygame.error as exc:
+        logger.warning(f"Could not post button event: {exc}")
 
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
 
-        pin_to_event = {
-            PIN_EXIT: EVT_BTN_EXIT,
-            PIN_PREV: EVT_BTN_PREV,
-            PIN_NEXT: EVT_BTN_NEXT,
-            PIN_PLAY: EVT_BTN_PLAY,
-        }
+def _setup_gpiozero():
+    """
+    Preferred backend. On current Raspberry Pi OS gpiozero drives the pins
+    through lgpio and the kernel's character-device API, which kept working when
+    newer kernels renumbered the legacy sysfs GPIO interface. RPi.GPIO's edge
+    detection still uses sysfs, and fails there with "Failed to add edge
+    detection" — taking every button out while the rest of the player runs.
+    """
+    from gpiozero import Button
 
-        def make_callback(evt_type):
-            def callback(channel):
-                pygame.event.post(pygame.event.Event(evt_type))
-            return callback
+    buttons = []
+    try:
+        for pin, evt in _pin_events().items():
+            button = Button(pin, pull_up=True, bounce_time=BUTTON_DEBOUNCE_MS / 1000)
+            button.when_pressed = lambda evt=evt: _post_button(evt)
+            buttons.append(button)
+    except Exception:
+        for button in buttons:
+            button.close()
+        raise
+    _gpio_buttons.extend(buttons)
 
-        for pin, evt in pin_to_event.items():
+
+def _setup_rpi_gpio():
+    """Fallback for older OS images without gpiozero."""
+    import RPi.GPIO as GPIO
+
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
+    def make_callback(evt_type):
+        def callback(channel):
+            _post_button(evt_type)
+        return callback
+
+    try:
+        for pin, evt in _pin_events().items():
             GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             GPIO.add_event_detect(
                 pin, GPIO.FALLING,
                 callback=make_callback(evt),
                 bouncetime=BUTTON_DEBOUNCE_MS,
             )
+    except Exception:
+        GPIO.cleanup()
+        raise
 
+
+def setup_gpio():
+    global GPIO_AVAILABLE, GPIO_BACKEND
+    errors = []
+    for name, setup in (("gpiozero", _setup_gpiozero), ("RPi.GPIO", _setup_rpi_gpio)):
+        try:
+            setup()
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+            continue
         GPIO_AVAILABLE = True
-        logger.info("GPIO initialized.")
-    except (ImportError, RuntimeError) as exc:
-        logger.warning(f"GPIO not available ({exc}). Keyboard-only mode.")
+        GPIO_BACKEND = name
+        logger.info(f"GPIO initialized ({name}).")
+        return
+    logger.warning(f"GPIO not available ({'; '.join(errors)}). Keyboard-only mode.")
 
 
 def cleanup_gpio():
-    if GPIO_AVAILABLE:
-        try:
+    if not GPIO_AVAILABLE:
+        return
+    try:
+        if GPIO_BACKEND == "gpiozero":
+            for button in _gpio_buttons:
+                button.close()
+            _gpio_buttons.clear()
+        else:
             import RPi.GPIO as GPIO
             GPIO.cleanup()
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Video discovery
@@ -1130,6 +1188,7 @@ class Player:
         mpv exited on its own. With --loop that should never happen, so treat it
         as a failure: a corrupt file, or a USB drive pulled mid-playback.
         """
+
         path    = self.playing_path
         ran_for = time.monotonic() - (self.playing_started or 0)
         self.mpv_proc = None

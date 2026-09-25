@@ -39,7 +39,8 @@ cd /home/pi/video-player
 bash install.sh
 ```
 
-The installer adds `mpv`, `python3-pygame`, and `python3-rpi.gpio`, creates
+The installer adds `mpv`, `python3-pygame`, `python3-gpiozero`/`python3-lgpio`,
+and `python3-rpi.gpio`, creates
 `/home/pi/videos` and the state directory, sets the system timezone to
 `America/Chicago`, copies the script to `/usr/local/bin/video-player.py`, and
 enables the systemd service. Remote polling uses only the Python standard
@@ -443,9 +444,11 @@ Restart the service to clear the quarantine.
 sudo journalctl -u video-player | grep GPIO
 ```
 
-`GPIO initialized.` means the pins are live. `GPIO not available` means
-`RPi.GPIO` is missing or inaccessible — the app falls back to keyboard-only mode
-rather than failing.
+`GPIO initialized (gpiozero).` means the pins are live. The player prefers
+`gpiozero` and falls back to `RPi.GPIO`; `GPIO not available (...)` lists why
+each one failed, and the app continues in keyboard-only mode rather than
+failing. `Failed to add edge detection` from `RPi.GPIO` is the known breakage on
+newer Raspberry Pi OS kernels — install `python3-gpiozero python3-lgpio`.
 
 ### No HDMI output
 
