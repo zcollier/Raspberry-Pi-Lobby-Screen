@@ -228,6 +228,25 @@ r.check("quarantined while broken", SD + "C.mp4" in p.quarantined, True)
 p.handle_sync({"downloaded": ["C.mp4"], "removed": [], "errors": [], "checked": 1})
 r.check("quarantine cleared", SD + "C.mp4" in p.quarantined, False)
 
+print("\n=== Scenario 14: Q pressed in mpv returns to the menu ===")
+fresh_state()
+p = new_player()
+p.handle_remote(remote("A.mp4", "2026-08-12T13:00:00Z"), None)
+p.playing_started = time.monotonic() - 60
+p.mpv_proc.returncode = 0                     # mpv's clean quit
+p.handle_mpv_exit()
+r.check("not relaunched", playing(p), None)
+r.check("     back on the menu", p.state, vp.AppState.MENU)
+r.check("     not counted as a failure", p.failures, {})
+p.handle_remote(remote("A.mp4", "2026-08-12T13:00:00Z"), None)
+r.check("unchanged poll stays stopped", playing(p), None)
+
+p.handle_remote(remote("B.mp4", "2026-08-12T14:00:00Z"), None)
+p.playing_started = time.monotonic() - 60
+p.mpv_proc.returncode = 2                     # mpv failed to play the file
+p.handle_mpv_exit()
+r.check("an error exit still relaunches", playing(p), "B.mp4")
+
 print("\n=== Scenario 13: sync errors are surfaced but harmless ===")
 fresh_state()
 p = new_player()

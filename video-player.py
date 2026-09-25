@@ -1185,9 +1185,17 @@ class Player:
 
     def handle_mpv_exit(self):
         """
-        mpv exited on its own. With --loop that should never happen, so treat it
-        as a failure: a corrupt file, or a USB drive pulled mid-playback.
+        mpv exited on its own. With --loop playback never ends, so a clean exit
+        (code 0) means someone pressed mpv's own quit key — mpv has keyboard
+        focus while playing, so Q never reaches pygame. Treat that exactly like
+        the EXIT button. Anything else is a failure: a corrupt file, or a USB
+        drive pulled mid-playback.
         """
+        if getattr(self.mpv_proc, "returncode", None) == 0:
+            logger.info("mpv quit from the keyboard. Returning to the menu.")
+            self.mpv_proc = None
+            self.local_stop()
+            return
 
         path    = self.playing_path
         ran_for = time.monotonic() - (self.playing_started or 0)
