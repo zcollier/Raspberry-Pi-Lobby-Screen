@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Deploy Video Player
+Comment=Install the files in /home/pi/video-player and restart the player
+Exec=bash /home/pi/video-player/deploy.sh
+Icon=system-software-update
+Terminal=true

@@ -128,7 +128,11 @@ PIN_PREV = 27
 PIN_NEXT = 22
 PIN_PLAY = 23
 
+# After a press, further presses of the same button are ignored for this long.
 BUTTON_DEBOUNCE_MS = 300
+# gpiozero only: a press must hold steady this long before it registers at all
+# (lgpio debounce means "stable for", not "ignore repeats"), so keep it short.
+BUTTON_SETTLE_MS = 20
 
 # Menu appearance
 MENU_BG_COLOR        = (10, 10, 10)
@@ -734,11 +738,22 @@ def _setup_gpiozero():
     """
     from gpiozero import Button
 
+    last_press = {}
+
+    def make_callback(evt_type):
+        def callback():
+            now = time.monotonic()
+            if now - last_press.get(evt_type, -1e9) < BUTTON_DEBOUNCE_MS / 1000:
+                return
+            last_press[evt_type] = now
+            _post_button(evt_type)
+        return callback
+
     buttons = []
     try:
         for pin, evt in _pin_events().items():
-            button = Button(pin, pull_up=True, bounce_time=BUTTON_DEBOUNCE_MS / 1000)
-            button.when_pressed = lambda evt=evt: _post_button(evt)
+            button = Button(pin, pull_up=True, bounce_time=BUTTON_SETTLE_MS / 1000)
+            button.when_pressed = make_callback(evt)
             buttons.append(button)
     except Exception:
         for button in buttons:
@@ -986,6 +1001,12 @@ class Player:
         self.target_source = Source.NONE
         self.target_set_at = None
 
+        # The last thing asked to play. Unlike the target, a local stop doesn't
+        # clear it, so a restart can resume it.
+        self.last_target_name   = None
+        self.last_target_path   = None
+        self.last_target_source = Source.NONE
+
         # What is actually playing.
         self.playing_path    = None
         self.playing_started = None
@@ -1034,6 +1055,15 @@ class Player:
                 self.target_source = Source(data.get("target_source", "none"))
             except ValueError:
                 self.target_source = Source.NONE
+            self.last_target_name = data.get("last_target_name")
+            self.last_target_path = data.get("last_target_path")
+            try:
+                self.last_target_source = Source(data.get("last_target_source", "none"))
+            except ValueError:
+                self.last_target_source = Source.NONE
+            if self.last_target_name is None and self.target_name:
+                # State written before last_target existed.
+                self._remember_target()
             logger.info(
                 f"Restored state: target={self.target_name!r} "
                 f"source={self.target_source.value}"
@@ -1052,6 +1082,7 @@ class Player:
                 self.target_name   = Path(stored).name
                 self.target_source = Source.LOCAL
                 self.target_set_at = utcnow()
+                self._remember_target()
                 logger.info(f"Migrated legacy state file: {stored}")
                 self.save_state()
 
@@ -1064,6 +1095,9 @@ class Player:
             "last_seen_remote": self.last_seen_remote,
             "remote_video":     self.remote_video,
             "remote_updated":   self.remote_updated.isoformat() if self.remote_updated else None,
+            "last_target_name":   self.last_target_name,
+            "last_target_path":   self.last_target_path,
+            "last_target_source": self.last_target_source.value,
         }
         try:
             path = Path(STATE_FILE)
@@ -1100,7 +1134,35 @@ class Player:
         self.quarantined.discard(path)
         if name:
             self.failures.pop(name, None)
+            self._remember_target()
         self.save_state()
+        self.reconcile()
+
+    def _remember_target(self):
+        self.last_target_name   = self.target_name
+        self.last_target_path   = self.target_path
+        self.last_target_source = self.target_source
+
+    def resume_on_startup(self):
+        """
+        Called once after load_state(). Always come up playing something: the
+        current target, else the last one (a local stop before the restart
+        doesn't count), else the default video on a fresh install.
+        """
+        if self.target_name is None and self.last_target_name:
+            logger.info(f"Resuming last target after restart: {self.last_target_name!r}")
+            self.target_name   = self.last_target_name
+            self.target_path   = self.last_target_path
+            self.target_source = self.last_target_source
+            self.target_set_at = utcnow()
+            self.save_state()
+
+        if self.target_name is None:
+            default = find_default_video(self.videos)
+            if default:
+                self.set_target(Path(default).name, path=default, source=Source.FALLBACK)
+            return
+
         self.reconcile()
 
     def resolve_target(self) -> str | None:
@@ -1572,14 +1634,7 @@ def main():
     player.rescan()
     player.load_state()
 
-    # Nothing remembered? Fall back to the default video so a fresh install
-    # still comes up playing something.
-    if player.target_name is None and player.target_source is Source.NONE:
-        default = find_default_video(player.videos)
-        if default:
-            player.set_target(Path(default).name, path=default, source=Source.FALLBACK)
-    else:
-        player.reconcile()
+    player.resume_on_startup()
 
     if player.state == AppState.MENU:
         player.render()
