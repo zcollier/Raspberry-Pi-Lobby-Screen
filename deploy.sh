@@ -21,6 +21,17 @@ if ! python3 -m py_compile "$SRC/video-player.py"; then
     finish 1
 fi
 
+# The player reads config.json in place, so it isn't copied anywhere — but a
+# typo would silently send the player back to its built-in URLs.
+if [ -f "$SRC/config.json" ]; then
+    echo "Checking $SRC/config.json..."
+    if ! python3 -m json.tool "$SRC/config.json" > /dev/null; then
+        echo ""
+        echo "ERROR: config.json is not valid JSON. Nothing was installed."
+        finish 1
+    fi
+fi
+
 echo "Installing video-player.py..."
 sudo cp "$SRC/video-player.py" /usr/local/bin/video-player.py || finish 1
 sudo chmod +x /usr/local/bin/video-player.py

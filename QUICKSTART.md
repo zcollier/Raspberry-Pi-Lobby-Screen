@@ -32,7 +32,7 @@ You can copy them locally:
 cp /path/to/your/video.mp4 /home/pi/videos/
 ```
 
-…or just upload them to `https://www.vrhsdramaboosters.com/lobby/video/` and let
+…or just upload them to `https://vrhstheatre.com/lobby/video/` and let
 the Pi download them itself:
 
 ```bash
@@ -50,7 +50,7 @@ someone picks a different one (after that, the player remembers the last choice)
 
 ### 3. Publish the remote state file
 
-Upload a file to `https://www.vrhsdramaboosters.com/lobby/state.json`:
+Upload a file to `https://vrhstheatre.com/lobby/state.json`:
 
 ```json
 {

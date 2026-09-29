@@ -197,4 +197,61 @@ r.check("legacy filename", migrated.target_name, "old.mp4")
 r.check("legacy path", migrated.target_path, "/home/pi/videos/old.mp4")
 r.check("legacy file upgraded", os.path.exists(vp.STATE_FILE), True)
 
+print("\n=== config.json ===")
+cfg_dir = tempfile.mkdtemp()
+
+
+def write_cfg(text):
+    path = os.path.join(cfg_dir, "config.json")
+    with open(path, "w") as f:
+        f.write(text)
+    return path
+
+
+settings, problems = vp.load_config(os.path.join(cfg_dir, "missing.json"))
+r.check("missing file is silent", (settings, problems), ({}, []))
+
+settings, problems = vp.load_config(write_cfg(json.dumps({
+    "state_url": " https://example.org/lobby/state.json ",
+    "media_url": "https://example.org/lobby/video/",
+})))
+r.check("reads both URLs", settings, {
+    "state_url": "https://example.org/lobby/state.json",
+    "media_url": "https://example.org/lobby/video/",
+})
+r.check("     no problems", problems, [])
+
+settings, problems = vp.load_config(write_cfg('{"state_url": "https://x/s.json",}'))
+r.check("broken JSON ignored", settings, {})
+r.check("     and reported", len(problems), 1)
+
+settings, problems = vp.load_config(write_cfg('["https://x/s.json"]'))
+r.check("non-object ignored", (settings, len(problems)), ({}, 1))
+
+settings, problems = vp.load_config(write_cfg(json.dumps({
+    "state_url": "vrhstheatre.com/lobby/state.json",
+    "media_url": "https://example.org/lobby/video/",
+})))
+r.check("bad URL dropped, good one kept", settings, {"media_url": "https://example.org/lobby/video/"})
+r.check("     bad URL reported", len(problems), 1)
+
+os.environ.pop("REMOTE_STATE_URL", None)
+r.check("file beats default", vp.config_setting({"state_url": "https://a/"}, "state_url", "REMOTE_STATE_URL", "https://d/"), "https://a/")
+os.environ["REMOTE_STATE_URL"] = "https://env/"
+r.check("file beats environment", vp.config_setting({"state_url": "https://a/"}, "state_url", "REMOTE_STATE_URL", "https://d/"), "https://a/")
+r.check("environment beats default", vp.config_setting({}, "state_url", "REMOTE_STATE_URL", "https://d/"), "https://env/")
+del os.environ["REMOTE_STATE_URL"]
+r.check("default when nothing set", vp.config_setting({}, "state_url", "REMOTE_STATE_URL", "https://d/"), "https://d/")
+
+# End to end: the module picks the file up at import time.
+os.environ["VIDEO_PLAYER_CONFIG"] = write_cfg(json.dumps({
+    "state_url": "https://example.org/lobby/state.json",
+    "media_url": "https://example.org/lobby/video",
+}))
+configured = load_player()
+del os.environ["VIDEO_PLAYER_CONFIG"]
+r.check("player uses file's state URL", configured.REMOTE_STATE_URL, "https://example.org/lobby/state.json")
+r.check("media URL gets its trailing slash", configured.REMOTE_MEDIA_DIR_URL, "https://example.org/lobby/video/")
+r.check("built-in default is the new domain", vp.DEFAULT_STATE_URL, "https://vrhstheatre.com/lobby/state.json")
+
 r.finish("test_logic")

@@ -11,8 +11,7 @@ SupplementaryGroups=gpio video input
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=SDL_VIDEODRIVER=x11
-# Where the player looks for its remote instructions. Change this if the file moves.
-Environment=REMOTE_STATE_URL=https://www.vrhsdramaboosters.com/lobby/state.json
+# The website URLs are set in /home/pi/video-player/config.json, not here.
 WorkingDirectory=/home/pi/videos
 ExecStart=/usr/bin/python3 /usr/local/bin/video-player.py
 Restart=always

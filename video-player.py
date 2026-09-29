@@ -70,12 +70,56 @@ VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 
-# Remote state. Override the URL with the REMOTE_STATE_URL environment variable
-# (set it in video-player.service) if the file ever moves.
-REMOTE_STATE_URL = os.environ.get(
-    "REMOTE_STATE_URL",
-    "https://www.vrhsdramaboosters.com/lobby/state.json",
-)
+# Site settings live in a JSON file in the SMB-shared folder, so moving the
+# website to a new domain is an edit over SMB plus a restart:
+#
+#   {
+#     "state_url": "https://vrhstheatre.com/lobby/state.json",
+#     "media_url": "https://vrhstheatre.com/lobby/video/"
+#   }
+#
+# Each setting is taken from, in order: this file, then the REMOTE_STATE_URL /
+# REMOTE_MEDIA_DIR_URL environment variables, then the defaults below. A
+# missing or broken file falls through to the next source rather than stopping
+# the player; the problem is logged at startup.
+CONFIG_FILE = os.environ.get("VIDEO_PLAYER_CONFIG", "/home/pi/video-player/config.json")
+
+DEFAULT_STATE_URL = "https://vrhstheatre.com/lobby/state.json"
+DEFAULT_MEDIA_URL = "https://vrhstheatre.com/lobby/video/"
+
+
+def load_config(path: str) -> tuple[dict, list[str]]:
+    """Read the config file. Returns (settings, problems); never raises."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}, []
+    except (OSError, ValueError) as exc:
+        return {}, [f"could not read {path}: {exc}"]
+
+    if not isinstance(data, dict):
+        return {}, [f"{path} must contain a JSON object"]
+
+    settings, problems = {}, []
+    for key in ("state_url", "media_url"):
+        value = data.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip().lower().startswith(("http://", "https://")):
+            problems.append(f"{path}: {key} must be an http(s) URL, got {value!r}")
+            continue
+        settings[key] = value.strip()
+    return settings, problems
+
+
+def config_setting(settings: dict, key: str, env: str, default: str) -> str:
+    return settings.get(key) or os.environ.get(env) or default
+
+
+CONFIG, CONFIG_PROBLEMS = load_config(CONFIG_FILE)
+
+REMOTE_STATE_URL = config_setting(CONFIG, "state_url", "REMOTE_STATE_URL", DEFAULT_STATE_URL)
 REMOTE_POLL_INTERVAL_SEC = 15      # How often to check the remote state file
 REMOTE_INITIAL_DELAY_SEC = 10      # Grace period after boot for network + NTP
 REMOTE_TIMEOUT_SEC = 15            # Per-request timeout
@@ -101,10 +145,10 @@ REMOTE_FAILURE_LOG_EVERY = max(1, round(1800 / REMOTE_POLL_INTERVAL_SEC))
 # you want them in lockstep anyway.
 # ---------------------------------------------------------------------------
 
-REMOTE_MEDIA_DIR_URL = os.environ.get(
-    "REMOTE_MEDIA_DIR_URL",
-    "https://www.vrhsdramaboosters.com/lobby/video/",
-)
+REMOTE_MEDIA_DIR_URL = config_setting(CONFIG, "media_url", "REMOTE_MEDIA_DIR_URL", DEFAULT_MEDIA_URL)
+# File URLs are built by appending the name, so the directory needs its slash.
+if not REMOTE_MEDIA_DIR_URL.endswith("/"):
+    REMOTE_MEDIA_DIR_URL += "/"
 SYNC_ENABLED = True
 SYNC_INTERVAL_SEC = 300            # How often to mirror the remote directory
 SYNC_INITIAL_DELAY_SEC = 20        # Let the first state poll happen first
@@ -181,6 +225,14 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def log_config():
+    """Say where the site settings came from — the first thing to check after a domain move."""
+    for problem in CONFIG_PROBLEMS:
+        logger.warning(f"Config problem, using fallback: {problem}")
+    source = CONFIG_FILE if CONFIG else "built-in defaults / environment"
+    logger.info(f"Config from {source}: state={REMOTE_STATE_URL} media={REMOTE_MEDIA_DIR_URL}")
 
 
 class AppState(Enum):
@@ -1511,6 +1563,7 @@ def check_remote() -> int:
     touching the display. This is the quickest way to confirm the web host
     serves the file correctly and is not caching it behind a CDN.
     """
+    log_config()
     print(f"Fetching {REMOTE_STATE_URL}\n")
     try:
         raw, etag, info = fetch_remote_state(None)
@@ -1589,6 +1642,7 @@ def check_remote() -> int:
 
 def sync_now() -> int:
     """Run one media sync pass in the foreground and report what happened."""
+    log_config()
     print(f"Syncing {REMOTE_MEDIA_DIR_URL}\n  -> {VIDEO_DIR}\n")
     result = sync_once()
 
@@ -1614,6 +1668,7 @@ def sync_now() -> int:
 
 def main():
     logger.info("Video player starting...")
+    log_config()
     time.sleep(2)  # Let the display settle on boot
 
     pygame.init()

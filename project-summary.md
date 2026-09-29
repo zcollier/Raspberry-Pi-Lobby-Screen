@@ -1,10 +1,11 @@
 # Project Summary — VRHS Lobby Screen
 
-Last updated: 2026-08-20
+Last updated: 2026-09-29
 
 Digital signage for the VRHS lobby monitors. A Raspberry Pi 4 plays video on an
 HDMI display and is controlled three ways: physical buttons in the lobby, a JSON
-file on the Boosters website, and automatic media downloads from that website.
+file on the theatre website (`vrhstheatre.com`), and automatic media downloads
+from that website.
 
 ---
 
@@ -12,22 +13,163 @@ file on the Boosters website, and automatic media downloads from that website.
 
 | Area | Status |
 |------|--------|
-| Remote video selection (`state.json`) | Built, tested, live on the website |
-| Automatic media sync (`/lobby/video/`) | Built, tested against the live server |
-| Physical GPIO buttons | **Reported not working — diagnosis in progress** |
-| Web upload/admin app | Not started; spec written for another agent |
-| Git | Three commits, latest `ecea397`; only this file is untracked |
+| Physical GPIO buttons | **Fixed and working on the Pi** (gpiozero backend) |
+| Button responsiveness | Fixed in code (no more half-second hold); on-Pi confirmation pending |
+| `q` during playback | Fixed: returns to the menu instead of relaunching |
+| Resume after restart | Always resumes the last video, even after EXIT/`q` |
+| USB sticks | Confirmed working on the Pi |
+| One-click deploy | `deploy.sh` + "Deploy Video Player" desktop icon, working on the Pi |
+| Website | **Moved to `vrhstheatre.com`**; `/lobby/` live there, checked 2026-09-29 |
+| Website URLs | Set in `/home/pi/video-player/config.json` (editable over SMB); **deployed 2026-09-29** |
+| Remote video selection (`state.json`) | Built and tested; verified against the new site |
+| Automatic media sync (`/lobby/video/`) | Built and tested; verified against the new site |
+| Web upload/admin app | Ported to the `vrhstheatre.com` repo and committed there (`33e9ffd`) |
+| Git | Latest commit `ec59e65`; the config.json change is deployed but **uncommitted** |
 
 ### Progress log
 
+- **2026-09-29** — The website moved to `vrhstheatre.com`. Website URLs now come
+  from `config.json` in the SMB-shared `video-player` folder instead of being
+  hard-coded or set in the service file. Deployed to the Pi the same day; the
+  user reports it working. Details below. Not yet committed.
+- **2026-09-25** — GPIO buttons diagnosed and fixed, `q` relaunch bug fixed,
+  button hold-time fixed, resume-on-restart added, one-click deploy added.
+  Discovered the website's `/lobby/` folder is gone (404). Details below.
+  Commits `a0d263a`, `c794e1b`, `ec59e65`.
 - **2026-08-20** — No code changes since the last save. Commit `ecea397` landed,
-  adding `gpio-check.py`. The GPIO fault remains unresolved: the diagnostic has
-  not been run on hardware, and no fix exists in `video-player.py`.
+  adding `gpio-check.py`.
 - **2026-08-14** — This summary first written. Remote selection and media sync
-  complete and tested against the live server. GPIO buttons reported broken;
-  ruled out the upgrades as the cause and wrote `gpio-check.py`.
+  complete and tested against the live server. GPIO buttons reported broken.
 - **2026-08-12** — Commit `e8512e2`: player restructure, remote selection, media
   sync, three test suites, `lobby-check`, and `WEB-ADMIN-SPEC.md`.
+
+---
+
+## Session 2026-09-29 — website moved, URLs made configurable
+
+The lobby feature now lives on **`https://vrhstheatre.com/lobby/`**. Checked
+live: `state.json` returns 200 `application/json` with no-cache headers (so its
+`.htaccess` is deployed), `/lobby/video/` is an Apache listing the player parses
+(`Peter-Pan-Goes-Wrong_no-sponsors.mp4`, `default.mov`), and file HEADs return
+`Content-Length` + `Last-Modified`. Plain Apache, no CDN. `www.` also works.
+The player's `--check-remote` passes end to end against it.
+
+**`config.json`** (new, in the repo, read in place at
+`/home/pi/video-player/config.json`):
+
+```json
+{
+  "state_url": "https://vrhstheatre.com/lobby/state.json",
+  "media_url": "https://vrhstheatre.com/lobby/video/"
+}
+```
+
+- Precedence per setting: `config.json` → `REMOTE_STATE_URL` /
+  `REMOTE_MEDIA_DIR_URL` env vars → built-in defaults (now `vrhstheatre.com`)
+- Read once at startup; a restart (the deploy icon) applies an edit
+- Missing file is silent; broken JSON, a non-object, or a non-http(s) URL is
+  logged as `Config problem, using fallback: …` and the player keeps running
+- `media_url` gets a trailing slash added if missing
+- Startup logs `Config from <source>: state=… media=…`
+  (`journalctl -u video-player -b | grep Config`)
+- Override the file's location with `VIDEO_PLAYER_CONFIG`
+- `deploy.sh` refuses to deploy if `config.json` isn't valid JSON
+
+Also: removed the old-domain `Environment=REMOTE_STATE_URL=` line from
+`video-player.service` (it would otherwise have been a stale fallback), updated
+`lobby-check`, `install.sh`, and all docs to the new domain, and added 15
+config tests to `test_logic.py`.
+
+**Media download verified against the new host** (from a Mac, using the
+player's own `remote_file_meta()` / `download_media()`): `default.mov`
+downloaded at 14,226,197 bytes with the server's mtime, was a valid QuickTime
+file, left no `.part` behind, and `needs_download()` then reported "up to date".
+
+**Deployed 2026-09-29** by copying `config.json`, `video-player.py`,
+`video-player.service` and `deploy.sh` into the `video-player` share and running
+the deploy icon (which installs the changed service file and runs
+`daemon-reload`). The user reports it working; specific log lines weren't
+checked in-session. To confirm in detail:
+`journalctl -u video-player -b | grep Config` should show
+`state=https://vrhstheatre.com/lobby/state.json`, and `lobby-check --sync`
+lists what downloads.
+
+---
+
+## Session 2026-09-25 — what was found and fixed
+
+### GPIO buttons: root cause confirmed
+
+Not a code regression — `setup_gpio()` was byte-identical to the original. The
+Pi runs **Raspberry Pi OS trixie**, where `RPi.GPIO`'s edge detection (which
+uses the legacy sysfs GPIO interface) fails. The journal showed it directly:
+
+```
+GPIO not available (Failed to add edge detection). Keyboard-only mode.
+```
+
+The player silently dropped to keyboard-only mode, so only the buttons broke.
+
+**Fix (`a0d263a`):** `setup_gpio()` now tries **gpiozero** first (lgpio backend,
+kernel character-device API) and falls back to `RPi.GPIO`. The log names the
+backend in use, or each backend's failure reason. `install.sh` now installs
+`python3-gpiozero python3-lgpio`. Confirmed on the Pi:
+`GPIO initialized (gpiozero).`, `pinctrl` shows all four pins as pulled-up
+inputs, and presses work.
+
+**Follow-up (`ec59e65`):** buttons then needed a ~0.5 s hold. lgpio's debounce
+means "level must be stable for N ms", not RPi.GPIO's "ignore repeats for N ms",
+so the 300 ms `bounce_time` became a 300 ms required hold. Now:
+
+- `BUTTON_SETTLE_MS = 20` — gpiozero `bounce_time`, filters electrical noise
+- `BUTTON_DEBOUNCE_MS = 300` — software lockout per button, restoring the old
+  "ignore repeats" behavior
+
+If a single press ever double-fires, raise `BUTTON_SETTLE_MS` to ~50. Whether
+this version is deployed on the Pi has not been confirmed.
+
+### `q` relaunched the video immediately (`c794e1b`)
+
+Not systemd — `RestartUSec=1min` was confirmed on the Pi. While a video plays
+**mpv has keyboard focus**, so `q` is mpv's own quit key: mpv exits, the Python
+player keeps running, and since the restructure any mpv exit was treated as a
+crash and relaunched. Because mpv runs with `--loop`, a clean exit (code 0) can
+only be a user quit, so `handle_mpv_exit()` now treats it like the EXIT button.
+Error exits still go through crash recovery. `q` on the menu quits the app;
+systemd restarts it after 60 s (`Restart=always`, which the user wants kept).
+
+### Always resume the last video after a restart (`ec59e65`)
+
+Previously EXIT/`q` persisted "show nothing", so a restart came up on the menu.
+The original pre-upgrade player always resumed. Now `Player` also persists
+`last_target_name/path/source` (not cleared by a local stop), and
+`resume_on_startup()` picks: current target → last target → `default.mp4`.
+EXIT/`q` still stop playback while the app runs. Older state files without the
+new fields migrate automatically; one stopped under the old code has nothing to
+resume and plays the default once.
+
+### One-click deploy (`ec59e65`)
+
+- `deploy.sh` — lives in `/home/pi/video-player/`. Compiles `video-player.py`
+  first and refuses to install a broken file, copies it to `/usr/local/bin`,
+  installs `video-player.service` + `daemon-reload` only if it changed, restarts,
+  and shows status. On success the window closes after 5 s; on failure it stays
+  open until Enter.
+- `deploy-video-player.desktop` — the "Deploy Video Player" icon; runs
+  `bash /home/pi/video-player/deploy.sh` in a terminal.
+- File Manager → Preferences → "Don't ask options on launch executable file"
+  stops the Execute / Execute-in-terminal prompt.
+
+### Website `/lobby/` folder is missing (resolved 2026-09-29 by the move)
+
+Checked 2026-09-25: the site root returns 200, but `/lobby/`, `/lobby/state.json`
+and `/lobby/video/` all return **404** (www and non-www). It was live in August.
+Likely cause (unconfirmed): in the website repo the entire `lobby/` folder is
+untracked, so any redeploy or sync from git would drop it.
+
+Effect: playback is unaffected — the Pi logs a (backed-off) "Could not reach
+remote state file … 404" warning and keeps playing. Remote selection and media
+sync are dead until the folder is restored.
 
 ---
 
@@ -72,6 +214,16 @@ Consequence: re-asserting the same video after a local override requires
 changing `updated`, since identical values are a no-op. Whitespace and key order
 don't matter — the fingerprint is computed on parsed values.
 
+### Local controls
+
+| Input | Menu | Playing |
+|-------|------|---------|
+| EXIT button | — | Stop, return to menu |
+| PREV / NEXT buttons | Move selection | Switch to previous/next video |
+| PLAY button | Play selected | — |
+| Up / Down / Enter keys | Move / play | (go to mpv) |
+| `q` key | Quit app (systemd restarts in 60 s, resumes last video) | Return to menu (via mpv exit code 0) |
+
 ---
 
 ## What was built
@@ -79,16 +231,10 @@ don't matter — the fingerprint is computed on parsed values.
 ### 1. Player restructure
 
 `video-player.py` grew from a single-video looper into a state machine. Playback
-logic moved into a `Player` class, collapsing six duplicated inline handlers into
-`start_playback()` / `stop_playback()` / `step_selection()`. All four input
-sources — GPIO, keyboard, remote poll, media sync — funnel through those methods
-on the main thread, so `mpv_proc` and the video list have exactly one writer.
-
-The integration seam was already there: GPIO callbacks post pygame events rather
-than touching state. Background threads do the same.
-
-Fixed along the way: keyboard `Q` was missing the `time.sleep(0.5)` that the EXIT
-button had before restoring the display.
+logic lives in a `Player` class; all input sources — GPIO, keyboard, remote
+poll, media sync — funnel through its methods on the main thread, so `mpv_proc`
+and the video list have exactly one writer. GPIO callbacks and background
+threads only post pygame events.
 
 ### 2. Remote selection
 
@@ -103,10 +249,9 @@ Validation rejects a wrong schema version, a non-object payload, a missing
 `video`, and any filename containing a path separator. A malformed file or a
 network failure changes nothing — the screen keeps playing.
 
-State moved from `last_played.txt` to `state.json` under
-`~/.config/video-player/`, with automatic migration. Persisting the last-seen
-remote fingerprint is what stops a reboot from re-applying an old instruction
-over a newer local override.
+State lives in `~/.config/video-player/state.json` (migrated from the old
+`last_played.txt`). Persisting the last-seen remote fingerprint is what stops a
+reboot from re-applying an old instruction over a newer local override.
 
 ### 3. Media sync
 
@@ -114,16 +259,13 @@ A separate `SyncWorker` thread mirrors `/lobby/video/` into `/home/pi/videos/`
 every 5 minutes. It enumerates via Apache's autoindex listing, then sends one
 `HEAD` per file for exact `Content-Length` and `Last-Modified`. A file downloads
 when it's missing locally, or when size **or** mtime differs — compared for
-*difference*, not "server is newer", so rollbacks propagate too.
-
-After download the local mtime is set to the server's, which is what makes the
-comparison stable across passes.
+*difference*, not "server is newer", so rollbacks propagate too. After download
+the local mtime is set to the server's.
 
 Safety properties, all tested:
 
-- Downloads write to a hidden `.part` file and `rename()` into place — a power
-  cut can't leave a truncated video where the player would try to play it
-- A file still being uploaded is detected and retried (see below)
+- Downloads write to a hidden `.part` file and `rename()` into place
+- A file still being uploaded is detected and retried
 - Downloads refused if they'd leave under 1 GB free on the SD card
 - Nothing is ever deleted (`SYNC_DELETE_REMOVED = False`)
 - Any failure leaves local files untouched and never interrupts playback
@@ -136,13 +278,13 @@ indefinitely via `--image-display-duration=inf`, and can be named in
 
 ### 4. Robustness
 
-- **Crash-loop guard**: if mpv exits within 5 seconds of launching, three times
-  running, the file is quarantined and the player falls back to the default
+- **Crash-loop guard**: if mpv exits with an error within 5 seconds of
+  launching, three times running, the file is quarantined and the player falls
+  back to the default
 - **Fallback chain**: `default.mp4`, then `default.mov`, then first file
   alphabetically. If the requested file is missing, the default plays and the Pi
   *keeps wanting* the target — plug in a USB stick and it switches automatically
-- **Outage logging** backs off to roughly every 30 minutes, derived from the poll
-  interval so it self-adjusts
+- **Outage logging** backs off to roughly every 30 minutes
 
 ### 5. Diagnostics
 
@@ -150,48 +292,47 @@ indefinitely via `--image-display-duration=inf`, and can be named in
 |---------|---------|
 | `lobby-check` | Wrapper: service status plus the remote check |
 | `lobby-check --sync` | Download new/changed media now |
-| `video-player.py --check-remote` | Fetch state.json, parse it, resolve the file, list every remote media file with size/timestamp/would-download |
+| `video-player.py --check-remote` | Fetch state.json, parse it, resolve the file, list remote media |
 | `video-player.py --sync-now` | One foreground sync pass |
-| `gpio-check.py` | Button diagnostic (see open items) |
+| `gpio-check.py` | Button diagnostic (uses RPi.GPIO, so its edge-detection test fails on trixie by design; polling still tests wiring) |
+| `pinctrl get 17,27,22,23` | Read pin levels live, even while the player runs — `hi` idle, `lo` pressed |
+| `journalctl -u video-player -b \| grep -i gpio` | Which GPIO backend initialized, or why none did |
 
 ---
 
 ## Verified facts about the environment
 
-Established by probing the live site, not assumed:
-
-- **Plain Apache, no CDN.** This is why the cache-busting works.
-- **`mod_autoindex` is enabled** on `/lobby/` and `/lobby/video/`. The media sync
-  depends on this. An `index.html`/`index.php` placed in `/lobby/video/` would
-  silently kill it.
-- **`state.json` is live and valid**, served as `application/json`.
-- **Everything under `/lobby/` is served with `cache-control: max-age=172800`
-  — two days.** The Pi is immune (unique query parameter per request, no
-  intermediate cache), but a *browser* will show stale content for two days.
-  Verify edits with `lobby-check`, never a browser. An `.htaccess` snippet to fix
-  this at the source is in `README.md`.
-- **Apache serves half-written files.** Observed directly: `test.mp4` was fetched
-  mid-upload, HEAD reported 4,915,200 bytes and the body delivered 4,980,736. The
-  size check refused the partial file and the retry succeeded. A post-download
-  re-verification was added as a result. Recommended workflow: upload under a
-  temporary name and rename when complete.
+- **Pi OS is Raspberry Pi OS trixie.** `python3-gpiozero 2.0.1` and
+  `python3-lgpio 0.2.2` are installed. `RPi.GPIO` edge detection does not work.
+- **`RestartUSec=1min`** confirmed on the Pi.
+- **SMB shares** on the Pi: `pi` (= `/home/pi`), `video-player`
+  (= `/home/pi/video-player`), `videos` (= `/home/pi/videos`). SMB cannot write
+  into `~/Desktop`, and nothing outside `/home/pi` is reachable — installing into
+  `/usr/local/bin` or `/etc/systemd/system` needs a terminal (or `deploy.sh`).
+- **USB sticks** mount under `/media/pi/<label>`; files in the stick's root show
+  up in the menu within ~5 s. A stale, root-owned `/media/pi/Samsung128` folder
+  (stick no longer present) logs "Permission denied" every 5 s;
+  `sudo rmdir /media/pi/Samsung128` clears it.
+- **The site is now `vrhstheatre.com`** (2026-09-29): plain Apache, no CDN,
+  `state.json` served no-cache; media files still carry `max-age=172800`.
+- The old `vrhsdramaboosters.com/lobby/` returned 404 on 2026-09-25. The facts
+  below were verified there in August:
+  - Plain Apache, no CDN; `mod_autoindex` enabled on `/lobby/` and
+    `/lobby/video/`. An index file in `/lobby/video/` would silently kill sync.
+  - Everything under `/lobby/` was served with a two-day cache header. The Pi is
+    immune (unique query parameter); browsers are not.
+  - Apache serves half-written files; the size check and post-download
+    re-verification handle it.
 
 ---
 
-## Deployment status
+## Deployment
 
-**Confirmed on the Pi:** the player is installed and working. Videos play,
-remote selection was deployed and functioning.
+**Normal update:** copy the new `video-player.py` (and `video-player.service`,
+if changed) into the `video-player` SMB share, then double-click **Deploy Video
+Player** on the Pi's desktop.
 
-**Not confirmed:**
-
-- Whether the media-sync version of `video-player.py` has been copied over yet
-- Whether `RestartSec=60` was applied (check with
-  `systemctl show video-player -p RestartUSec`; expect `1min`)
-- Whether `lobby-check` is installed (it is in the repo and installed by
-  `install.sh`)
-
-Deployment is a file copy over the open SMB share plus:
+**Manual equivalent:**
 
 ```bash
 sudo cp /home/pi/video-player/video-player.py /usr/local/bin/video-player.py
@@ -199,71 +340,39 @@ sudo chmod +x /usr/local/bin/video-player.py
 sudo systemctl restart video-player
 ```
 
-`daemon-reload` is only needed when `video-player.service` itself changes. No new
-dependencies were introduced — everything uses the Python standard library.
+The 2026-09-29 deploy installed the current working tree, which includes
+everything from `ec59e65` (button settle time, resume-on-restart, auto-closing
+deploy window) plus the `config.json` change.
+
+**Changing the website address:** edit `config.json` in the `video-player`
+share, then run the deploy icon (or `sudo systemctl restart video-player`).
 
 ---
 
 ## Open items
 
-### 1. GPIO buttons reported not working (active, unresolved)
+### 1. Commit the config.json change
 
-Verified against the original commit `92aacc3`: `setup_gpio()` and
-`cleanup_gpio()` are **identical to the original**, and all four button handlers
-are still wired in the main loop. The upgrades did not touch the GPIO input path,
-which points at the environment or the hardware.
+Deployed and working on the Pi, but not yet committed in this repo (user's call).
 
-**No code fix has landed yet.** Commit `ecea397` is titled "Maybe fixed GPIO
-buttons" but contains only `gpio-check.py` — the diagnostic script, not a fix.
-`video-player.py` has not been modified since `e8512e2`; it still uses
-`RPi.GPIO` with `add_event_detect()`, which is precisely the call that fails on
-newer Raspberry Pi OS kernels. If that turns out to be the cause, the fix is
-still to be written.
+### 2. Web upload/admin app ("Lobby TVs")
 
-**Nothing has been reported back from running the diagnostic on hardware**, so
-the root cause is still unknown — the two candidate explanations below are both
-still open.
+Built against `WEB-ADMIN-SPEC.md`. Now in `../vrhstheatre.com` (`admin/lobby.php`,
+`admin/lobby-lib.php`, `lobby/video/`), committed there as `33e9ffd` "Restored
+old Lobby TV code". The live `state.json` on vrhstheatre.com was written
+2026-09-29, consistent with it being in use. The original copy in
+`../vrhsdramaboosters.com` is still untracked there, along with
+`LOBBY-PORT-GUIDE.md`.
 
-Diagnosis starts with:
+### 3. Confirm on the Pi
 
-```bash
-sudo journalctl -u video-player -b | grep -i gpio
-```
+- Quick taps register and a single press doesn't double-fire
+- A restart after `q`/EXIT resumes the last video
 
-- `GPIO not available (...)` → the player fell back to keyboard-only at startup.
-  The parenthesised reason matters. `Failed to add edge detection` is the likely
-  one after an `apt upgrade` — `RPi.GPIO` edge detection breaks on newer
-  Raspberry Pi OS kernels. Fix would be migrating to `gpiozero` on the `lgpio`
-  backend (`python3-gpiozero`, available via apt, no third-party dependency),
-  ideally with an `RPi.GPIO` fallback.
-- `GPIO initialized.` → pins claimed fine; run `gpio-check.py` (stop the service
-  first). It polls the pins *and* separately tries to register edge detection,
-  which separates a wiring fault from the kernel issue. All four failing at once
-  points at the shared ground wire.
+### 4. Housekeeping
 
-Two answers would narrow this quickly: whether `apt upgrade` was run recently,
-and whether all four buttons failed together or only some.
-
-### 2. Web upload/admin app
-
-Being built by a separate agent against `WEB-ADMIN-SPEC.md`. Dreamhost LAMP, no
-third-party dependencies. The spec is self-contained — it doesn't require reading
-the Python.
-
-The four failure modes most likely to bite that build, all called out in the
-spec:
-
-1. An index file in `/lobby/video/` kills the directory listing and silently
-   stops media sync forever
-2. `"version": "1"` as a string causes the entire file to be discarded
-3. Volatile fields in `state.json` (e.g. a regenerated timestamp on every page
-   load) make the Pi re-apply constantly and break the physical buttons
-4. Writing `state.json` on page load rather than on submit does the same
-
-### 3. Housekeeping
-
-- `project-summary.md` is untracked
-- Optional: `.htaccess` in `/lobby/` to stop the 2-day cache header on `.json`
+- `sudo rmdir /media/pi/Samsung128` on the Pi
+- Optional: log unreadable USB drives once rather than every 5 s
 
 ---
 
@@ -278,17 +387,16 @@ python3 tests/test_scenarios.py
 python3 tests/test_sync.py
 ```
 
-- **`test_logic.py`** — filename safety and path-traversal rejection, file
-  resolution, timestamp parsing and CDT/CST display, payload validation, Apache
-  listing parsing (fixture captured from the live host), size/mtime comparison
-- **`test_scenarios.py`** — the 8:00/8:05/8:06/9:00 sequence, reboots preserving
-  a local override, missing files, crash-loop quarantine, outages, and how
-  completed downloads affect playback
-- **`test_sync.py`** — the real download path against a local HTTP server:
-  atomic renames, mtime preservation, truncated downloads, a full disk, an
-  unreachable server
+- **`test_logic.py`** — filename safety, file resolution, timestamps, payload
+  validation, Apache listing parsing, size/mtime comparison
+- **`test_scenarios.py`** — the 8:00/8:05/8:06/9:00 sequence, reboots, missing
+  files, crash-loop quarantine, outages, downloads; plus Scenario 14 (`q` in mpv
+  returns to the menu; error exits still relaunch) and Scenario 15 (restart
+  resumes the last video even after EXIT; fresh install plays the default)
+- **`test_sync.py`** — the real download path against a local HTTP server
 
-All passing as of the last run.
+All passing as of 2026-09-25. The GPIO backends are not covered by the suites;
+they were checked against fake gpiozero/RPi.GPIO modules during the session.
 
 ---
 
@@ -298,11 +406,16 @@ All passing as of the last run.
 |----------|-----|
 | Outbound polling, no server on the Pi | The network can't accept inbound traffic |
 | Change detection, not clock comparison | Pi has no RTC; humans forget to update timestamps |
-| State poll 15s, media sync 5 min, separate threads | A multi-minute video download must not delay a state check; per-file HEAD requests every 15s would be tens of thousands of requests a day |
+| State poll 15s, media sync 5 min, separate threads | A long download must not delay a state check |
 | Local override survives reboot | Faithful reading of "most recent instruction wins" |
+| A local stop does not survive a restart | The screen should always come back up playing; matches the original player |
+| gpiozero first, RPi.GPIO fallback | RPi.GPIO edge detection is broken on current Pi OS |
+| Short hardware settle + software lockout | lgpio debounce means "hold for N ms", which made buttons feel sluggish |
+| mpv exit code 0 = user quit | With `--loop`, playback never ends cleanly on its own |
+| `Restart=always`, `RestartSec=60` | Always recover, but give a person time after quitting |
+| Deploy script compiles before installing | A half-copied file over SMB must not replace a working player |
 | Nothing is ever deleted by default | Deleting files on a machine you can't see should be deliberate |
-| Images are playable, not just stored | A poster or announcement slide should work like a video |
-| Atomic writes everywhere | The player may read at any moment; a power cut must not leave corruption |
+| Atomic writes everywhere | A power cut must not leave corruption |
 | Static `state.json`, not PHP-generated | A PHP warning in the response body would break the parse |
 
 ---
@@ -312,8 +425,11 @@ All passing as of the last run.
 | File | Purpose |
 |------|---------|
 | `video-player.py` | The player — menu, GPIO, remote polling, media sync, mpv control |
-| `video-player.service` | Systemd unit (`RestartSec=60`, `REMOTE_STATE_URL`) |
+| `video-player.service` | Systemd unit (`Restart=always`, `RestartSec=60`) |
+| `config.json` | Website URLs (`state_url`, `media_url`), read in place on the Pi |
 | `install.sh` | Installer; safe to re-run, restarts a running service |
+| `deploy.sh` | One-click deploy, run from the desktop icon |
+| `deploy-video-player.desktop` | "Deploy Video Player" desktop launcher |
 | `lobby-check` | Diagnostic wrapper installed to `/usr/local/bin` |
 | `gpio-check.py` | Button diagnostic — polling vs edge detection |
 | `state.json.example` | Sample remote state file |
@@ -327,4 +443,5 @@ All passing as of the last run.
 
 Configuration lives in a block at the top of `video-player.py`. The
 authoritative validation rules are `parse_remote_payload()` and
-`is_safe_filename()`; sync behavior is `sync_once()`.
+`is_safe_filename()`; sync behavior is `sync_once()`; startup behavior is
+`Player.resume_on_startup()`.

@@ -73,7 +73,7 @@ Then `sudo reboot`.
 The Pi fetches this file every 15 seconds:
 
 ```
-https://www.vrhsdramaboosters.com/lobby/state.json
+https://vrhstheatre.com/lobby/state.json
 ```
 
 ```json
@@ -143,7 +143,7 @@ a cache-busting query parameter to every request. If `--check-remote` reports a
 non-zero `Age` header, a CDN is still serving a cached copy, and you'll need to
 adjust the caching rules on the host.
 
-`vrhsdramaboosters.com` is served by plain Apache with **no CDN in front of it**,
+`vrhstheatre.com` is served by plain Apache with **no CDN in front of it**,
 which is what makes the cache-busting fully effective today.
 
 That said, the server sends a strikingly long cache header on everything under
@@ -187,7 +187,7 @@ file manager. The Pi only cares about the bytes it gets back.
 Any video or image you publish to
 
 ```
-https://www.vrhsdramaboosters.com/lobby/video/
+https://vrhstheatre.com/lobby/video/
 ```
 
 is downloaded into `/home/pi/videos/` automatically. Upload a file to the
@@ -464,15 +464,40 @@ Videos play **with audio**. To mute, add `--no-audio` to the `cmd` list in
 
 ## Customization
 
-Configuration lives at the top of `video-player.py`:
+### Website URLs — `config.json`
+
+The website address is set in `/home/pi/video-player/config.json`, which is
+editable over the `video-player` SMB share:
+
+```json
+{
+  "state_url": "https://vrhstheatre.com/lobby/state.json",
+  "media_url": "https://vrhstheatre.com/lobby/video/"
+}
+```
+
+After editing, restart the player (the **Deploy Video Player** icon does this,
+and rejects a file that isn't valid JSON). Startup logs which URLs are in use:
+
+```bash
+sudo journalctl -u video-player -b | grep "Config"
+```
+
+A missing setting falls back to the `REMOTE_STATE_URL` / `REMOTE_MEDIA_DIR_URL`
+environment variables, then to the defaults below. A broken file is logged as a
+`Config problem` and the player keeps running on the fallbacks.
+
+### Everything else
+
+The remaining configuration lives at the top of `video-player.py`:
 
 | Setting | Default | Purpose |
 |---------|---------|---------|
-| `REMOTE_STATE_URL` | the vrhsdramaboosters.com URL | Remote state file. Also settable via the `REMOTE_STATE_URL` environment variable in the service file |
+| `REMOTE_STATE_URL` | `https://vrhstheatre.com/lobby/state.json` | Remote state file. Set `state_url` in `/home/pi/video-player/config.json` (see below) |
 | `REMOTE_POLL_INTERVAL_SEC` | 15 | How often to check for new instructions |
 | `REMOTE_INITIAL_DELAY_SEC` | 10 | Grace period after boot for network and clock sync |
 | `REMOTE_TIMEOUT_SEC` | 15 | Per-request timeout |
-| `REMOTE_MEDIA_DIR_URL` | the `/lobby/video/` URL | Directory mirrored into `VIDEO_DIR`. Also settable via the `REMOTE_MEDIA_DIR_URL` environment variable |
+| `REMOTE_MEDIA_DIR_URL` | `https://vrhstheatre.com/lobby/video/` | Directory mirrored into `VIDEO_DIR`. Set `media_url` in `config.json` |
 | `SYNC_ENABLED` | `True` | Set `False` to turn media sync off entirely |
 | `SYNC_INTERVAL_SEC` | 300 | How often to mirror the media directory |
 | `SYNC_MIN_FREE_BYTES` | 1 GB | Free space to preserve on the SD card |

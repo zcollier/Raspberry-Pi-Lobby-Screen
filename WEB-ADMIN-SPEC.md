@@ -20,8 +20,8 @@ Two URLs form the entire interface:
 
 | URL | What it is | Who writes it |
 |-----|------------|---------------|
-| `https://www.vrhsdramaboosters.com/lobby/state.json` | Says which file should be playing | **Your app** |
-| `https://www.vrhsdramaboosters.com/lobby/video/` | Directory of media files | **Your app** (uploads) |
+| `https://vrhstheatre.com/lobby/state.json` | Says which file should be playing | **Your app** |
+| `https://vrhstheatre.com/lobby/video/` | Directory of media files | **Your app** (uploads) |
 
 The Pi does this on a loop, forever:
 
@@ -394,13 +394,13 @@ You can validate most of it yourself without the Pi:
 
 ```bash
 # Valid JSON? Correct types?
-curl -s 'https://www.vrhsdramaboosters.com/lobby/state.json' | python3 -m json.tool
+curl -s 'https://vrhstheatre.com/lobby/state.json' | python3 -m json.tool
 
 # Directory listing still parseable? (should list your files, not your UI)
-curl -s 'https://www.vrhsdramaboosters.com/lobby/video/' | grep -o 'href="[^"]*"'
+curl -s 'https://vrhstheatre.com/lobby/video/' | grep -o 'href="[^"]*"'
 
 # HEAD metadata present and accurate?
-curl -sI 'https://www.vrhsdramaboosters.com/lobby/video/default.mov' \
+curl -sI 'https://vrhstheatre.com/lobby/video/default.mov' \
   | grep -iE 'content-length|last-modified'
 ```
 

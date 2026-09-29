@@ -90,7 +90,7 @@ the JSON. Any edit counts as a new instruction.
 
 **File:** `README.md` — "Remote Control"
 
-Upload this to `https://www.vrhsdramaboosters.com/lobby/state.json`
+Upload this to `https://vrhstheatre.com/lobby/state.json`
 (there's a copy at `state.json.example`):
 
 ```json
@@ -122,7 +122,7 @@ broken.
 Upload videos and images to:
 
 ```
-https://www.vrhsdramaboosters.com/lobby/video/
+https://vrhstheatre.com/lobby/video/
 ```
 
 The Pi mirrors that directory into `/home/pi/videos/` every 5 minutes — a new
@@ -192,8 +192,8 @@ local override made before it lost power.
 
 | Purpose | Location |
 |---------|----------|
-| Remote state file | `https://www.vrhsdramaboosters.com/lobby/state.json` |
-| Remote media directory | `https://www.vrhsdramaboosters.com/lobby/video/` |
+| Remote state file | `https://vrhstheatre.com/lobby/state.json` |
+| Remote media directory | `https://vrhstheatre.com/lobby/video/` |
 | Video files (SD card) | `/home/pi/videos/` |
 | Video files (USB) | Root directory of any drive under `/media/pi/` |
 | Fallback filename | `default.mp4`, then `default.mov` (SD card first) |

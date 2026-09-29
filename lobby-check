@@ -82,7 +82,7 @@ if [ "$rc" -ne 0 ]; then
 The check above reported a problem. The usual causes, in order of likelihood:
 
   · No network yet. The Pi often boots faster than the school's wifi comes up.
-    Try:  ping -c1 www.vrhsdramaboosters.com
+    Try:  ping -c1 vrhstheatre.com
 
   · state.json is malformed, so the player ignores it and keeps playing whatever
     is on screen. Open Lobby TVs in the website admin — its System check names
