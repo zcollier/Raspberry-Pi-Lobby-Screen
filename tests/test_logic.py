@@ -254,4 +254,30 @@ r.check("player uses file's state URL", configured.REMOTE_STATE_URL, "https://ex
 r.check("media URL gets its trailing slash", configured.REMOTE_MEDIA_DIR_URL, "https://example.org/lobby/video/")
 r.check("built-in default is the new domain", vp.DEFAULT_STATE_URL, "https://vrhstheatre.com/lobby/state.json")
 
+print("\n=== webcam ===")
+CAM = "/dev/v4l/by-id/usb-MOKOSE_UVC_Camera-video-index0"
+r.check("is_webcam", (vp.is_webcam(CAM), vp.is_webcam("/home/pi/videos/a.mp4"), vp.is_webcam(None)), (True, False, False))
+r.check("source name", vp.source_name(CAM), "webcam")
+r.check("resolve 'webcam'", vp.resolve_filename("webcam", ["/home/pi/videos/a.mp4", CAM]), CAM)
+r.check("resolve 'Webcam'", vp.resolve_filename("Webcam", [CAM]), CAM)
+r.check("no camera, no match", vp.resolve_filename("webcam", ["/home/pi/videos/a.mp4"]), None)
+r.check("a file named webcam.mp4 is still a file", vp.resolve_filename("webcam.mp4", ["/home/pi/videos/webcam.mp4", CAM]), "/home/pi/videos/webcam.mp4")
+
+captured = []
+real_popen = vp.subprocess.Popen
+vp.subprocess.Popen = lambda cmd, **kw: captured.append(cmd)
+vp.launch_mpv(CAM)
+vp.launch_mpv("/home/pi/videos/a.mp4")
+vp.subprocess.Popen = real_popen
+cam_cmd, file_cmd = captured
+r.check("camera opened through v4l2", cam_cmd[-1], "av://v4l2:" + CAM)
+r.check("     with no audio, low latency", all(f in cam_cmd for f in ("--no-audio", "--profile=low-latency", "--untimed")), True)
+r.check("     at the configured mode", "--demuxer-lavf-o=input_format=mjpeg,video_size=1280x720" in cam_cmd, True)
+r.check("files unchanged", (file_cmd[-1], "--no-audio" in file_cmd), ("/home/pi/videos/a.mp4", False))
+
+settings, problems = vp.load_config(write_cfg(json.dumps({"webcam_size": "1920x1080", "webcam_format": ""})))
+r.check("webcam settings read", settings, {"webcam_size": "1920x1080", "webcam_format": ""})
+settings, problems = vp.load_config(write_cfg(json.dumps({"webcam_size": "1080p", "webcam_format": "MJPEG!"})))
+r.check("bad webcam settings rejected", (settings, len(problems)), ({}, 2))
+
 r.finish("test_logic")

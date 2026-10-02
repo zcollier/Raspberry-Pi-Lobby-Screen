@@ -35,7 +35,9 @@ Command line:
 """
 
 import os
+import re
 import sys
+import glob
 import json
 import time
 import shutil
@@ -66,6 +68,13 @@ STATE_FILE = "/home/pi/.config/video-player/state.json"
 LEGACY_STATE_FILE = "/home/pi/.config/video-player/last_played.txt"
 DEFAULT_FILES = ["default.mp4", "default.mov"]
 
+# A USB webcam appears in the menu as a live source. Its name in state.json is
+# WEBCAM_NAME; real media files always carry an extension, so it can't clash.
+# The by-id glob lists USB cameras only (never the Pi's internal codec nodes),
+# and index0 is the capture node rather than the metadata one.
+WEBCAM_NAME = "webcam"
+WEBCAM_GLOB = "/dev/v4l/by-id/*-video-index0"
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
 SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
@@ -75,7 +84,9 @@ SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 #
 #   {
 #     "state_url": "https://vrhstheatre.com/lobby/state.json",
-#     "media_url": "https://vrhstheatre.com/lobby/video/"
+#     "media_url": "https://vrhstheatre.com/lobby/video/",
+#     "webcam_size": "1280x720",
+#     "webcam_format": "mjpeg"
 #   }
 #
 # Each setting is taken from, in order: this file, then the REMOTE_STATE_URL /
@@ -110,6 +121,19 @@ def load_config(path: str) -> tuple[dict, list[str]]:
             problems.append(f"{path}: {key} must be an http(s) URL, got {value!r}")
             continue
         settings[key] = value.strip()
+
+    # Webcam capture mode. An empty string leaves the choice to the camera.
+    for key, pattern, example in (
+        ("webcam_size", r"\d{2,5}x\d{2,5}", "1280x720"),
+        ("webcam_format", r"[a-z0-9_]+", "mjpeg"),
+    ):
+        value = data.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not (value == "" or re.fullmatch(pattern, value)):
+            problems.append(f"{path}: {key} must look like {example!r} (or \"\"), got {value!r}")
+            continue
+        settings[key] = value
     return settings, problems
 
 
@@ -149,6 +173,11 @@ REMOTE_MEDIA_DIR_URL = config_setting(CONFIG, "media_url", "REMOTE_MEDIA_DIR_URL
 # File URLs are built by appending the name, so the directory needs its slash.
 if not REMOTE_MEDIA_DIR_URL.endswith("/"):
     REMOTE_MEDIA_DIR_URL += "/"
+
+# Capture mode requested from the webcam. MJPEG is what most USB 2.0 webcams
+# use for 720p and 1080p at 30 fps; 1280x720 is the safe default for the Pi 4.
+WEBCAM_SIZE = CONFIG.get("webcam_size", "1280x720")
+WEBCAM_FORMAT = CONFIG.get("webcam_format", "mjpeg")
 SYNC_ENABLED = True
 SYNC_INTERVAL_SEC = 300            # How often to mirror the remote directory
 SYNC_INITIAL_DELAY_SEC = 20        # Let the first state poll happen first
@@ -934,7 +963,22 @@ def discover_videos() -> list[str]:
                 continue
             videos.extend(usb_videos)
 
+    # Live sources last. Only the first camera is offered: "webcam" in
+    # state.json has to mean one specific device.
+    cameras = sorted(glob.glob(WEBCAM_GLOB))
+    if cameras:
+        videos.append(cameras[0])
+
     return videos
+
+
+def is_webcam(path: str | None) -> bool:
+    return bool(path) and path.startswith("/dev/")
+
+
+def source_name(path: str) -> str:
+    """The name a path is known by in state.json and on screen."""
+    return WEBCAM_NAME if is_webcam(path) else Path(path).name
 
 
 def usb_drive_name(path: str) -> str | None:
@@ -946,6 +990,8 @@ def usb_drive_name(path: str) -> str | None:
 
 def video_label(path: str) -> str:
     """Display label for a video path, prefixed with its source."""
+    if is_webcam(path):
+        return "[Live]  Webcam"
     p = Path(path)
     if p.is_relative_to(Path(VIDEO_DIR)):
         return f"[SD Card]  {p.name}"
@@ -965,22 +1011,24 @@ def resolve_filename(name: str, videos: list[str]) -> str | None:
     if not is_safe_filename(name):
         return None
     for path in videos:
-        if Path(path).name == name:
+        if source_name(path) == name:
             return path
     lowered = name.lower()
     for path in videos:
-        if Path(path).name.lower() == lowered:
+        if source_name(path).lower() == lowered:
             return path
     return None
 
 
 def find_default_video(videos: list[str]) -> str | None:
-    """The fallback video: default.mp4, then default.mov, then whatever is first."""
+    """The fallback video: default.mp4, then default.mov, then the first file.
+    Never the webcam: the fallback is what plays when a live source has gone."""
+    files = [v for v in videos if not is_webcam(v)]
     for name in DEFAULT_FILES:
-        match = resolve_filename(name, videos)
+        match = resolve_filename(name, files)
         if match:
             return match
-    return videos[0] if videos else None
+    return files[0] if files else None
 
 # ---------------------------------------------------------------------------
 # mpv process management
@@ -996,11 +1044,21 @@ def launch_mpv(video_path: str) -> subprocess.Popen:
         "--really-quiet",
         "--vo=gpu",
     ]
-    if is_image(video_path):
-        # Without this mpv shows a still image for one second and exits, which
-        # the crash-loop guard would (correctly) treat as a failure.
-        cmd.append("--image-display-duration=inf")
-    cmd.append(video_path)
+    if is_webcam(video_path):
+        # Live pass-through: no audio, and no buffering for smoothness — show
+        # each frame as soon as it arrives.
+        cmd += ["--no-audio", "--profile=low-latency", "--untimed"]
+        options = [f"{key}={value}" for key, value in
+                   (("input_format", WEBCAM_FORMAT), ("video_size", WEBCAM_SIZE)) if value]
+        if options:
+            cmd.append("--demuxer-lavf-o=" + ",".join(options))
+        cmd.append(f"av://v4l2:{video_path}")
+    else:
+        if is_image(video_path):
+            # Without this mpv shows a still image for one second and exits, which
+            # the crash-loop guard would (correctly) treat as a failure.
+            cmd.append("--image-display-duration=inf")
+        cmd.append(video_path)
 
     logger.info(f"Launching: {video_path}")
     return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -1167,6 +1225,14 @@ class Player:
         previously = self.videos[self.selected] if self.videos else None
         self.videos = discover_videos()
 
+        # A webcam that failed was most likely unplugged or mid-reconnect.
+        # Once it's gone from the list, forget the failures, so plugging it
+        # back in gives it a fresh start rather than a quarantine.
+        for path in [p for p in self.quarantined | set(self.failures)
+                     if is_webcam(p) and p not in self.videos]:
+            self.quarantined.discard(path)
+            self.failures.pop(path, None)
+
         if not self.videos:
             self.selected = 0
         elif previously and previously in self.videos:
@@ -1258,7 +1324,7 @@ class Player:
                 return
             logger.warning(
                 f"Target {self.target_name!r} not found locally — "
-                f"falling back to {Path(desired).name}. "
+                f"falling back to {source_name(desired)}. "
                 f"It will start automatically if the file appears."
             )
 
@@ -1303,9 +1369,11 @@ class Player:
         (code 0) means someone pressed mpv's own quit key — mpv has keyboard
         focus while playing, so Q never reaches pygame. Treat that exactly like
         the EXIT button. Anything else is a failure: a corrupt file, or a USB
-        drive pulled mid-playback.
+        drive pulled mid-playback. A webcam that vanished counts as a failure
+        whatever mpv's exit code, so the fallback takes over.
         """
-        if getattr(self.mpv_proc, "returncode", None) == 0:
+        camera_gone = is_webcam(self.playing_path) and not os.path.exists(self.playing_path)
+        if getattr(self.mpv_proc, "returncode", None) == 0 and not camera_gone:
             logger.info("mpv quit from the keyboard. Returning to the menu.")
             self.mpv_proc = None
             self.local_stop()
@@ -1353,7 +1421,7 @@ class Player:
             return
         path = self.videos[self.selected]
         logger.info(f"Local selection: {path}")
-        self.set_target(Path(path).name, path=path, source=Source.LOCAL)
+        self.set_target(source_name(path), path=path, source=Source.LOCAL)
 
     def local_stop(self):
         """
@@ -1436,7 +1504,7 @@ class Player:
         lines = []
 
         if self.target_name:
-            playing = Path(self.playing_path).name if self.playing_path else "nothing"
+            playing = source_name(self.playing_path) if self.playing_path else "nothing"
             source  = self.target_source.value
             if self.using_fallback:
                 lines.append((

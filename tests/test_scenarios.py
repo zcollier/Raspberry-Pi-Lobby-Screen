@@ -270,6 +270,67 @@ p = new_player()
 p.resume_on_startup()
 r.check("fresh install plays the default", playing(p), "default.mp4")
 
+print("\n=== Scenario 16: the webcam is a live source like any file ===")
+CAM = "/dev/v4l/by-id/usb-MOKOSE_UVC_Camera-video-index0"
+with_cam = LIBRARY + [CAM]
+fresh_state()
+p = new_player(with_cam)
+r.check("webcam is in the menu", CAM in p.videos, True)
+r.check("     labelled as live", vp.video_label(CAM), "[Live]  Webcam")
+r.check("     never the fallback", vp.find_default_video(p.videos), SD + "default.mp4")
+p.handle_remote(remote("webcam", "2026-10-02T13:00:00Z"), None)
+r.check("remote 'webcam' plays the camera", p.playing_path, CAM)
+r.check("     shown by name", p.status_lines()[0][0].startswith("Playing: webcam"), True)
+
+# Unplugged mid-show: the device node disappears, mpv exits.
+vp.discover_videos = lambda: list(LIBRARY)
+p.rescan()
+p.playing_started = time.monotonic() - 600
+p.mpv_proc.returncode = 0          # whatever mpv reports, the camera is gone
+p.handle_mpv_exit()
+r.check("unplugged camera falls back to default", playing(p), "default.mp4")
+r.check("     still wants the webcam", p.target_name, "webcam")
+
+# Plugged back in: picked up by the next rescan.
+vp.discover_videos = lambda: list(with_cam)
+p.rescan()
+p.reconcile()
+r.check("replugged camera resumes", p.playing_path, CAM)
+
+# Fast failures (camera present but mpv can't open it) quarantine it...
+for _ in range(vp.MPV_MAX_FAILURES):
+    p.playing_started = time.monotonic()
+    p.mpv_proc.returncode = 2
+    p.handle_mpv_exit()
+r.check("repeated fast failures quarantine the camera", CAM in p.quarantined, True)
+r.check("     and fall back", playing(p), "default.mp4")
+# ...but unplug and replug gives it a fresh start.
+vp.discover_videos = lambda: list(LIBRARY)
+p.rescan()
+vp.discover_videos = lambda: list(with_cam)
+p.rescan()
+p.reconcile()
+r.check("replug clears the quarantine", (CAM in p.quarantined, p.playing_path), (False, CAM))
+
+# q in mpv while the camera is still there is a normal local stop.
+real_exists = vp.os.path.exists
+vp.os.path.exists = lambda path: path == CAM or real_exists(path)
+p.playing_started = time.monotonic() - 60
+p.mpv_proc.returncode = 0
+p.handle_mpv_exit()
+vp.os.path.exists = real_exists
+r.check("q on a live camera returns to the menu", (playing(p), p.state), (None, vp.AppState.MENU))
+
+# Picked from the menu, it's remembered by name across a restart.
+fresh_state()
+p = new_player(with_cam)
+p.selected = p.videos.index(CAM)
+p.play_selected()
+r.check("menu pick targets 'webcam'", p.target_name, "webcam")
+rebooted = new_player(with_cam)
+rebooted.resume_on_startup()
+r.check("restart resumes the webcam", rebooted.playing_path, CAM)
+
 print("\n=== Scenario 13: sync errors are surfaced but harmless ===")
 fresh_state()
 p = new_player()

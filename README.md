@@ -487,6 +487,29 @@ A missing setting falls back to the `REMOTE_STATE_URL` / `REMOTE_MEDIA_DIR_URL`
 environment variables, then to the defaults below. A broken file is logged as a
 `Config problem` and the player keeps running on the fallbacks.
 
+### Live webcam
+
+Plug a USB webcam into the Pi and a **[Live] Webcam** entry appears at the end
+of the menu within about 5 seconds. Select it like any video: buttons, keyboard,
+or the website with `"video": "webcam"` in `state.json`. It plays full screen
+with no audio and minimal delay.
+
+- Only the first camera is used. Cameras are found under `/dev/v4l/by-id/`.
+- If the camera is unplugged while live, the default video plays; plugging it
+  back in switches to live again.
+- The capture mode is set in `config.json`:
+
+  ```json
+  { "webcam_size": "1280x720", "webcam_format": "mjpeg" }
+  ```
+
+  List what a camera supports with
+  `v4l2-ctl -d /dev/v4l/by-id/*-video-index0 --list-formats-ext` (from
+  `sudo apt-get install v4l-utils`). Use `""` for either setting to let the
+  camera choose.
+- If the picture is choppy, drop to `640x480`; if `1280x720` is smooth, try
+  `1920x1080`.
+
 ### Everything else
 
 The remaining configuration lives at the top of `video-player.py`:

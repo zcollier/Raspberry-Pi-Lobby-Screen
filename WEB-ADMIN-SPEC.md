@@ -52,8 +52,16 @@ tolerate that unknown parameter (stock Apache does; a PHP router must ignore it)
 | Field | Type | Required | Rules |
 |-------|------|----------|-------|
 | `version` | **integer** | no (defaults to 1) | Must be exactly `1`. Any other value makes the Pi **ignore the entire file** |
-| `video` | string | **yes** | A bare filename. See filename rules in §4 |
+| `video` | string | **yes** | A bare filename (see filename rules in §4), or the reserved name `"webcam"` for the Pi's live USB camera |
 | `updated` | string | no, but always send it | ISO 8601. `Z` suffix or explicit offset. A timestamp with no zone is interpreted as `America/Chicago` |
+
+### The live webcam
+
+`"video": "webcam"` switches the screen to the USB camera plugged into the Pi,
+passed through live with no audio. Offer it in the UI as its own choice (for
+example "Live webcam") next to the uploaded files. It is not a file: never
+upload or list anything for it. If no camera is plugged in, the Pi plays its
+default video and switches to the camera automatically when one appears.
 
 ### Type traps that will silently break it
 
