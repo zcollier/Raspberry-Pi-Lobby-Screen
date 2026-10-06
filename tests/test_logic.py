@@ -272,7 +272,9 @@ vp.subprocess.Popen = real_popen
 cam_cmd, file_cmd = captured
 r.check("camera opened through v4l2", cam_cmd[-1], "av://v4l2:" + CAM)
 r.check("     with no audio, low latency", all(f in cam_cmd for f in ("--no-audio", "--profile=low-latency", "--untimed")), True)
-r.check("     at the configured mode", "--demuxer-lavf-o=input_format=mjpeg,video_size=1280x720" in cam_cmd, True)
+r.check("     with no input buffering", all(f in cam_cmd for f in ("--cache=no", "--demuxer-lavf-o-add=fflags=+nobuffer")), True)
+r.check("     at the configured mode", all(f in cam_cmd for f in ("--demuxer-lavf-o-add=input_format=mjpeg", "--demuxer-lavf-o-add=video_size=1280x720")), True)
+r.check("     without replacing the profile's options", any(f.startswith("--demuxer-lavf-o=") for f in cam_cmd), False)
 r.check("files unchanged", (file_cmd[-1], "--no-audio" in file_cmd), ("/home/pi/videos/a.mp4", False))
 
 settings, problems = vp.load_config(write_cfg(json.dumps({"webcam_size": "1920x1080", "webcam_format": ""})))

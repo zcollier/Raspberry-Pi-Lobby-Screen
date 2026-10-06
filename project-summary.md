@@ -1,6 +1,6 @@
 # Project Summary — VRHS Lobby Screen
 
-Last updated: 2026-09-29
+Last updated: 2026-10-06
 
 Digital signage for the VRHS lobby monitors. A Raspberry Pi 4 plays video on an
 HDMI display and is controlled three ways: physical buttons in the lobby, a JSON
@@ -23,15 +23,23 @@ from that website.
 | Website URLs | Set in `/home/pi/video-player/config.json` (editable over SMB); **deployed 2026-09-29** |
 | Remote video selection (`state.json`) | Built and tested; verified against the new site |
 | Automatic media sync (`/lobby/video/`) | Built and tested; verified against the new site |
+| USB webcam live source | **Working on the Pi** at 1920x1080 MJPEG; latency fix deployed 2026-10-06 |
 | Web upload/admin app | Ported to the `vrhstheatre.com` repo and committed there (`33e9ffd`) |
-| Git | Latest commit `ec59e65`; the config.json change is deployed but **uncommitted** |
+| Git | Everything deployed is committed (webcam `b99992a`, latency fix 2026-10-06) |
 
 ### Progress log
 
+- **2026-10-06** — Webcam tested on real hardware and working. Fixed a bug that
+  had silently dropped mpv's input-buffering fix, which made the live picture
+  lag noticeably; the user reports it is much better now. Capture raised to
+  1920x1080 on the Pi through `config.json`, also working. Details below.
+- **2026-10-02** — Commit `b99992a`: USB webcam as a live source in the menu
+  and in `state.json` (`"video": "webcam"`). The config.json change from
+  2026-09-29 was committed earlier as `bf278ab`.
 - **2026-09-29** — The website moved to `vrhstheatre.com`. Website URLs now come
   from `config.json` in the SMB-shared `video-player` folder instead of being
   hard-coded or set in the service file. Deployed to the Pi the same day; the
-  user reports it working. Details below. Not yet committed.
+  user reports it working. Details below. Committed as `bf278ab`.
 - **2026-09-25** — GPIO buttons diagnosed and fixed, `q` relaunch bug fixed,
   button hold-time fixed, resume-on-restart added, one-click deploy added.
   Discovered the website's `/lobby/` folder is gone (404). Details below.
@@ -42,6 +50,32 @@ from that website.
   complete and tested against the live server. GPIO buttons reported broken.
 - **2026-08-12** — Commit `e8512e2`: player restructure, remote selection, media
   sync, three test suites, `lobby-check`, and `WEB-ADMIN-SPEC.md`.
+
+---
+
+## Session 2026-10-06 — webcam on real hardware, latency fix
+
+The webcam (`b99992a`) was deployed and works on the Pi: "[Live] Webcam"
+appears in the menu and plays full screen.
+
+**Latency bug, fixed.** The picture lagged well behind real life. mpv's
+`low-latency` profile sets `demuxer-lavf-o-add=fflags=+nobuffer`, but
+`launch_mpv()` then passed `--demuxer-lavf-o=input_format=…,video_size=…`,
+which *replaces* the whole option list and dropped `nobuffer`. Each capture
+option now goes in its own `--demuxer-lavf-o-add=`, `fflags=+nobuffer` is added
+explicitly, and `--cache=no` is set. `test_logic.py` checks that no plain
+`--demuxer-lavf-o=` is ever passed. Deployed; the user reports the lag is much
+better. (The profile's contents were from mpv's built-in profile, recalled
+rather than checked against the Pi's mpv; the fix works either way.)
+
+**1080p.** The Pi's `config.json` now has `"webcam_size": "1920x1080"`, and the
+user reports it works. The repo's `config.json` and the code default are still
+`1280x720`.
+
+Remaining latency levers if needed: the TV's Game Mode (TV processing delay),
+dropping to `640x480` (the Pi 4 decodes MJPEG in software, so a delay that grows
+over time means it can't keep up), and better lighting (dim rooms make webcams
+drop their frame rate).
 
 ---
 
@@ -179,7 +213,7 @@ The Pi never accepts an inbound connection — the school network can't allow it
 Everything is driven by the Pi reaching *out*:
 
 ```
-                    vrhsdramaboosters.com
+                    vrhstheatre.com
                     ├── /lobby/state.json     "play this file"
                     └── /lobby/video/         media files to mirror
                               ▲
@@ -286,7 +320,18 @@ indefinitely via `--image-display-duration=inf`, and can be named in
   *keeps wanting* the target — plug in a USB stick and it switches automatically
 - **Outage logging** backs off to roughly every 30 minutes
 
-### 5. Diagnostics
+### 5. Live webcam (`b99992a`, latency fix 2026-10-06)
+
+The first camera matching `/dev/v4l/by-id/*-video-index0` appears as
+"[Live] Webcam" at the end of the menu, and `"video": "webcam"` selects it
+remotely. mpv opens it as `av://v4l2:…` with no audio, the `low-latency`
+profile, `--untimed`, `--cache=no` and `fflags=+nobuffer`. The capture mode
+comes from `webcam_size` / `webcam_format` in `config.json` (default
+1280x720 MJPEG; `""` lets the camera choose). Unplugging it falls back to the
+default video, and replugging switches back to live with its crash-loop
+quarantine cleared. The webcam is never the fallback.
+
+### 6. Diagnostics
 
 | Command | Purpose |
 |---------|---------|
@@ -342,7 +387,9 @@ sudo systemctl restart video-player
 
 The 2026-09-29 deploy installed the current working tree, which includes
 everything from `ec59e65` (button settle time, resume-on-restart, auto-closing
-deploy window) plus the `config.json` change.
+deploy window) plus the `config.json` change. On 2026-10-06 the webcam build
+and its latency fix were deployed (only `video-player.py` was copied), and the
+Pi's `config.json` was edited by hand to `"webcam_size": "1920x1080"`.
 
 **Changing the website address:** edit `config.json` in the `video-player`
 share, then run the deploy icon (or `sudo systemctl restart video-player`).
@@ -351,9 +398,11 @@ share, then run the deploy icon (or `sudo systemctl restart video-player`).
 
 ## Open items
 
-### 1. Commit the config.json change
+### 1. Webcam follow-ups
 
-Deployed and working on the Pi, but not yet committed in this repo (user's call).
+- The repo's `config.json` says `1280x720`; the Pi's says `1920x1080`. Copying
+  the repo's file over the Pi's would undo the 1080p setting.
+- Not yet checked: whether the lag grows over long live sessions at 1080p.
 
 ### 2. Web upload/admin app ("Lobby TVs")
 
@@ -395,7 +444,7 @@ python3 tests/test_sync.py
   resumes the last video even after EXIT; fresh install plays the default)
 - **`test_sync.py`** — the real download path against a local HTTP server
 
-All passing as of 2026-09-25. The GPIO backends are not covered by the suites;
+All passing as of 2026-10-06. The GPIO backends are not covered by the suites;
 they were checked against fake gpiozero/RPi.GPIO modules during the session.
 
 ---
@@ -416,6 +465,7 @@ they were checked against fake gpiozero/RPi.GPIO modules during the session.
 | Deploy script compiles before installing | A half-copied file over SMB must not replace a working player |
 | Nothing is ever deleted by default | Deleting files on a machine you can't see should be deliberate |
 | Atomic writes everywhere | A power cut must not leave corruption |
+| Webcam options appended with `-add` | A plain `--demuxer-lavf-o=` replaces the profile's `fflags=+nobuffer` and brings the lag back |
 | Static `state.json`, not PHP-generated | A PHP warning in the response body would break the parse |
 
 ---

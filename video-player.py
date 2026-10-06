@@ -1047,11 +1047,12 @@ def launch_mpv(video_path: str) -> subprocess.Popen:
     if is_webcam(video_path):
         # Live pass-through: no audio, and no buffering for smoothness — show
         # each frame as soon as it arrives.
-        cmd += ["--no-audio", "--profile=low-latency", "--untimed"]
-        options = [f"{key}={value}" for key, value in
-                   (("input_format", WEBCAM_FORMAT), ("video_size", WEBCAM_SIZE)) if value]
-        if options:
-            cmd.append("--demuxer-lavf-o=" + ",".join(options))
+        cmd += ["--no-audio", "--profile=low-latency", "--untimed", "--cache=no"]
+        # Append with -add: a plain --demuxer-lavf-o= would replace the list and
+        # drop the profile's fflags=+nobuffer, which is most of its latency win.
+        options = [("fflags", "+nobuffer"),
+                   ("input_format", WEBCAM_FORMAT), ("video_size", WEBCAM_SIZE)]
+        cmd += [f"--demuxer-lavf-o-add={key}={value}" for key, value in options if value]
         cmd.append(f"av://v4l2:{video_path}")
     else:
         if is_image(video_path):
