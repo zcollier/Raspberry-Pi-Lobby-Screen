@@ -69,8 +69,8 @@ better. (The profile's contents were from mpv's built-in profile, recalled
 rather than checked against the Pi's mpv; the fix works either way.)
 
 **1080p.** The Pi's `config.json` now has `"webcam_size": "1920x1080"`, and the
-user reports it works. The repo's `config.json` and the code default are still
-`1280x720`.
+user reports it works. The repo's `config.json` was updated to match; the code
+default (used when the setting is missing) is still `1280x720`.
 
 Remaining latency levers if needed: the TV's Game Mode (TV processing delay),
 dropping to `640x480` (the Pi 4 decodes MJPEG in software, so a delay that grows
@@ -400,8 +400,6 @@ share, then run the deploy icon (or `sudo systemctl restart video-player`).
 
 ### 1. Webcam follow-ups
 
-- The repo's `config.json` says `1280x720`; the Pi's says `1920x1080`. Copying
-  the repo's file over the Pi's would undo the 1080p setting.
 - Not yet checked: whether the lag grows over long live sessions at 1080p.
 
 ### 2. Web upload/admin app ("Lobby TVs")
