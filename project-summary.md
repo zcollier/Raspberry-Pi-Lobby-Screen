@@ -29,6 +29,13 @@ from that website.
 
 ### Progress log
 
+- **2026-10-06 (later)** — Admin page (`../vrhstheatre.com/admin/lobby.php`)
+  gets a "Live webcam" card that sends `"video": "webcam"`. The player now falls
+  back to the **most recent video** (not the default) while the webcam is
+  selected but missing. Neither is committed or deployed yet. Also
+  investigating the webcam lag that wanders with motion: `top` showed mpv at
+  ~30% of one core, so decoding is not the bottleneck; the camera/USB link is
+  the main suspect, pending a `v4l2-ctl --stream-mmap` fps test.
 - **2026-10-06** — Webcam tested on real hardware and working. Fixed a bug that
   had silently dropped mpv's input-buffering fix, which made the live picture
   lag noticeably; the user reports it is much better now. Capture raised to
@@ -400,7 +407,15 @@ share, then run the deploy icon (or `sudo systemctl restart video-player`).
 
 ### 1. Webcam follow-ups
 
-- Not yet checked: whether the lag grows over long live sessions at 1080p.
+- Lag wanders with motion (behind when still, catches up with movement). Not
+  CPU: mpv used ~30% of one core. Next: measure delivered fps with
+  `v4l2-ctl -d $CAM --set-fmt-video=width=1920,height=1080,pixelformat=MJPG
+  --stream-mmap --stream-count=600`, still vs moving; if it varies, look at
+  `--list-ctrls` for `exposure_dynamic_framerate`. Also try `framerate=15`.
+- Most-recent-video fallback (`Player.webcam_fallback()`, persisted as
+  `last_file_name/path`) and the admin page's webcam card: not yet committed or
+  deployed. Deploy = copy `video-player.py`; the website change ships with the
+  vrhstheatre.com repo.
 
 ### 2. Web upload/admin app ("Lobby TVs")
 

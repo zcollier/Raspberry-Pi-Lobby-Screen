@@ -60,8 +60,9 @@ tolerate that unknown parameter (stock Apache does; a PHP router must ignore it)
 `"video": "webcam"` switches the screen to the USB camera plugged into the Pi,
 passed through live with no audio. Offer it in the UI as its own choice (for
 example "Live webcam") next to the uploaded files. It is not a file: never
-upload or list anything for it. If no camera is plugged in, the Pi plays its
-default video and switches to the camera automatically when one appears.
+upload or list anything for it. If no camera is plugged in, the Pi keeps
+playing the most recent video (the default video if it has none) and switches
+to the camera automatically when one appears.
 
 ### Type traps that will silently break it
 

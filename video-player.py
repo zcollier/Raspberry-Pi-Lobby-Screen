@@ -976,6 +976,11 @@ def is_webcam(path: str | None) -> bool:
     return bool(path) and path.startswith("/dev/")
 
 
+def is_webcam_name(name: str | None) -> bool:
+    """True for a target name meaning the webcam, in any capitalisation."""
+    return bool(name) and name.lower() == WEBCAM_NAME
+
+
 def source_name(path: str) -> str:
     """The name a path is known by in state.json and on screen."""
     return WEBCAM_NAME if is_webcam(path) else Path(path).name
@@ -1118,6 +1123,11 @@ class Player:
         self.last_target_path   = None
         self.last_target_source = Source.NONE
 
+        # The most recent target that was a file rather than the webcam. It's
+        # what plays when the webcam is wanted but isn't plugged in.
+        self.last_file_name = None
+        self.last_file_path = None
+
         # What is actually playing.
         self.playing_path    = None
         self.playing_started = None
@@ -1172,9 +1182,15 @@ class Player:
                 self.last_target_source = Source(data.get("last_target_source", "none"))
             except ValueError:
                 self.last_target_source = Source.NONE
+            self.last_file_name = data.get("last_file_name")
+            self.last_file_path = data.get("last_file_path")
             if self.last_target_name is None and self.target_name:
                 # State written before last_target existed.
                 self._remember_target()
+            if self.last_file_name is None and not is_webcam_name(self.last_target_name):
+                # State written before last_file existed.
+                self.last_file_name = self.last_target_name
+                self.last_file_path = self.last_target_path
             logger.info(
                 f"Restored state: target={self.target_name!r} "
                 f"source={self.target_source.value}"
@@ -1209,6 +1225,8 @@ class Player:
             "last_target_name":   self.last_target_name,
             "last_target_path":   self.last_target_path,
             "last_target_source": self.last_target_source.value,
+            "last_file_name":     self.last_file_name,
+            "last_file_path":     self.last_file_path,
         }
         try:
             path = Path(STATE_FILE)
@@ -1261,6 +1279,9 @@ class Player:
         self.last_target_name   = self.target_name
         self.last_target_path   = self.target_path
         self.last_target_source = self.target_source
+        if not is_webcam_name(self.target_name):
+            self.last_file_name = self.target_name
+            self.last_file_path = self.target_path
 
     def resume_on_startup(self):
         """
@@ -1297,6 +1318,19 @@ class Player:
             return match
         return None
 
+    def webcam_fallback(self) -> str | None:
+        """
+        While the webcam is wanted but missing, keep showing the most recent
+        video rather than the default. None if the target isn't the webcam or
+        that video isn't available either.
+        """
+        if not is_webcam_name(self.target_name) or not self.last_file_name:
+            return None
+        playable = [v for v in self.videos if v not in self.quarantined]
+        if self.last_file_path in playable:
+            return self.last_file_path
+        return resolve_filename(self.last_file_name, playable)
+
     def reconcile(self):
         """
         Make what is playing match the target. Safe to call often — it returns
@@ -1311,7 +1345,7 @@ class Player:
         fallback = False
 
         if desired is None:
-            desired = find_default_video(
+            desired = self.webcam_fallback() or find_default_video(
                 [v for v in self.videos if v not in self.quarantined]
             )
             fallback = True

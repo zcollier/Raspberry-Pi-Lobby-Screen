@@ -495,8 +495,9 @@ or the website with `"video": "webcam"` in `state.json`. It plays full screen
 with no audio and minimal delay.
 
 - Only the first camera is used. Cameras are found under `/dev/v4l/by-id/`.
-- If the camera is unplugged while live, the default video plays; plugging it
-  back in switches to live again.
+- If the camera is selected but not plugged in, or is unplugged while live,
+  the most recent video plays (the default video if there isn't one); plugging
+  it back in switches to live again.
 - The capture mode is set in `config.json`:
 
   ```json

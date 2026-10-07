@@ -288,7 +288,7 @@ p.rescan()
 p.playing_started = time.monotonic() - 600
 p.mpv_proc.returncode = 0          # whatever mpv reports, the camera is gone
 p.handle_mpv_exit()
-r.check("unplugged camera falls back to default", playing(p), "default.mp4")
+r.check("unplugged camera falls back to default", playing(p), "default.mp4")   # no file played yet
 r.check("     still wants the webcam", p.target_name, "webcam")
 
 # Plugged back in: picked up by the next rescan.
@@ -330,6 +330,48 @@ r.check("menu pick targets 'webcam'", p.target_name, "webcam")
 rebooted = new_player(with_cam)
 rebooted.resume_on_startup()
 r.check("restart resumes the webcam", rebooted.playing_path, CAM)
+
+print("\n=== Scenario 17: a missing webcam falls back to the most recent video ===")
+fresh_state()
+p = new_player(LIBRARY)                       # no camera plugged in
+p.handle_remote(remote("B.mp4", "2026-10-06T13:00:00Z"), None)
+p.handle_remote(remote("webcam", "2026-10-06T14:00:00Z"), None)
+r.check("webcam selected while absent keeps B", playing(p), "B.mp4")
+r.check("     still wants the webcam", p.target_name, "webcam")
+vp.discover_videos = lambda: list(with_cam)
+p.rescan()
+p.reconcile()
+r.check("plugging it in goes live", p.playing_path, CAM)
+vp.discover_videos = lambda: list(LIBRARY)
+p.rescan()
+p.playing_started = time.monotonic() - 600
+p.mpv_proc.returncode = 0
+p.handle_mpv_exit()
+r.check("unplugging it goes back to B", playing(p), "B.mp4")
+
+# A menu pick counts too, and the choice survives a restart.
+p.selected = p.videos.index(SD + "C.mp4")
+p.play_selected()
+p.handle_remote(remote("webcam", "2026-10-06T15:00:00Z"), None)
+r.check("local pick is the most recent video", playing(p), "C.mp4")
+rebooted = new_player(LIBRARY)
+rebooted.resume_on_startup()
+r.check("     remembered across a restart", playing(rebooted), "C.mp4")
+
+# The most recent video gone too: the default plays.
+rebooted = new_player([SD + "default.mp4", SD + "A.mp4"])
+rebooted.resume_on_startup()
+r.check("most recent video missing plays the default", playing(rebooted), "default.mp4")
+
+# State files written before this existed fall back on the last target.
+state = json.loads(open(vp.STATE_FILE).read())
+state.update(target_name="webcam", target_path=None, last_target_name="A.mp4",
+             last_target_path=SD + "A.mp4")
+del state["last_file_name"], state["last_file_path"]
+open(vp.STATE_FILE, "w").write(json.dumps(state))
+old = new_player(LIBRARY)
+old.resume_on_startup()
+r.check("old state file migrates", playing(old), "A.mp4")
 
 print("\n=== Scenario 13: sync errors are surfaced but harmless ===")
 fresh_state()
