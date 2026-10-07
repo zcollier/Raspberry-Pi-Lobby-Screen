@@ -8,6 +8,9 @@ VRHS Lobby Screen — Interactive Video Player
 - "Most recent instruction wins" between remote and local control, resolved by
   change detection rather than clock comparison (see RemoteWatcher below)
 - State persistence: survives reboots and loss of internet access
+- Status reports: POSTs what it has, what is on screen and whether a webcam is
+  plugged in back to the website, so the admin page can show it (outbound
+  again — the website never contacts the Pi)
 
 GPIO buttons (BCM numbering, wire each between pin and GND):
   Pin 17 = EXIT  — stop video, return to menu
@@ -66,6 +69,7 @@ VIDEO_DIR = "/home/pi/videos"
 USB_MOUNT_ROOT = "/media/pi"
 STATE_FILE = "/home/pi/.config/video-player/state.json"
 LEGACY_STATE_FILE = "/home/pi/.config/video-player/last_played.txt"
+EVENTS_FILE = "/home/pi/.config/video-player/events.json"
 DEFAULT_FILES = ["default.mp4", "default.mov"]
 
 # A USB webcam appears in the menu as a live source. Its name in state.json is
@@ -86,17 +90,24 @@ SUPPORTED_EXTENSIONS = VIDEO_EXTENSIONS | IMAGE_EXTENSIONS
 #     "state_url": "https://vrhstheatre.com/lobby/state.json",
 #     "media_url": "https://vrhstheatre.com/lobby/video/",
 #     "webcam_size": "1280x720",
-#     "webcam_format": "mjpeg"
+#     "webcam_format": "mjpeg",
+#     "status_url": "https://vrhstheatre.com/lobby/status.php",
+#     "status_token": "<same value as LOBBY_STATUS_TOKEN on the website>",
+#     "status_interval": 60
 #   }
 #
 # Each setting is taken from, in order: this file, then the REMOTE_STATE_URL /
 # REMOTE_MEDIA_DIR_URL environment variables, then the defaults below. A
 # missing or broken file falls through to the next source rather than stopping
-# the player; the problem is logged at startup.
+# the player; the problem is logged at startup. Status reports are only sent
+# when status_token is set; "status_url": "" turns them off explicitly.
 CONFIG_FILE = os.environ.get("VIDEO_PLAYER_CONFIG", "/home/pi/video-player/config.json")
 
 DEFAULT_STATE_URL = "https://vrhstheatre.com/lobby/state.json"
 DEFAULT_MEDIA_URL = "https://vrhstheatre.com/lobby/video/"
+DEFAULT_STATUS_URL = "https://vrhstheatre.com/lobby/status.php"
+DEFAULT_STATUS_INTERVAL_SEC = 60
+STATUS_INTERVAL_RANGE = (10, 3600)
 
 
 def load_config(path: str) -> tuple[dict, list[str]]:
@@ -134,6 +145,31 @@ def load_config(path: str) -> tuple[dict, list[str]]:
             problems.append(f"{path}: {key} must look like {example!r} (or \"\"), got {value!r}")
             continue
         settings[key] = value
+
+    # Status reports. An empty URL is allowed here, unlike above: it means off.
+    value = data.get("status_url")
+    if value is not None:
+        if not isinstance(value, str) or not (
+                value.strip() == "" or value.strip().lower().startswith(("http://", "https://"))):
+            problems.append(f"{path}: status_url must be an http(s) URL (or \"\" for off), got {value!r}")
+        else:
+            settings["status_url"] = value.strip()
+
+    # Sent as an HTTP header, so printable ASCII with no spaces.
+    value = data.get("status_token")
+    if value is not None:
+        if not isinstance(value, str) or not re.fullmatch(r"[\x21-\x7e]{0,200}", value):
+            problems.append(f"{path}: status_token must be printable text with no spaces")
+        else:
+            settings["status_token"] = value
+
+    value = data.get("status_interval")
+    if value is not None:
+        low, high = STATUS_INTERVAL_RANGE
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not low <= value <= high:
+            problems.append(f"{path}: status_interval must be seconds between {low} and {high}, got {value!r}")
+        else:
+            settings["status_interval"] = int(value)
     return settings, problems
 
 
@@ -178,6 +214,19 @@ if not REMOTE_MEDIA_DIR_URL.endswith("/"):
 # use for 720p and 1080p at 30 fps; 1280x720 is the safe default for the Pi 4.
 WEBCAM_SIZE = CONFIG.get("webcam_size", "1280x720")
 WEBCAM_FORMAT = CONFIG.get("webcam_format", "mjpeg")
+
+# Status reports back to the website. See StatusReporter.
+STATUS_URL = CONFIG.get("status_url", DEFAULT_STATUS_URL)
+STATUS_TOKEN = CONFIG.get("status_token", "")
+STATUS_INTERVAL_SEC = CONFIG.get("status_interval", DEFAULT_STATUS_INTERVAL_SEC)
+STATUS_INITIAL_DELAY_SEC = 10      # Same boot grace period as the state poll
+STATUS_MIN_GAP_SEC = 5             # Never report more often than this
+STATUS_SCHEMA_VERSION = 1
+STATUS_FAILURE_LOG_EVERY = max(1, round(1800 / STATUS_INTERVAL_SEC))
+EVENTS_KEEP = 50                   # Events kept, and resent with every report
+PICK_SETTLE_SEC = 10               # Button presses this close become one event
+BOOT_UPTIME_SEC = 300              # Started this soon after boot = the Pi started
+
 SYNC_ENABLED = True
 SYNC_INTERVAL_SEC = 300            # How often to mirror the remote directory
 SYNC_INITIAL_DELAY_SEC = 20        # Let the first state poll happen first
@@ -244,6 +293,7 @@ EVT_BTN_PLAY   = pygame.USEREVENT + 4
 EVT_RESCAN     = pygame.USEREVENT + 5
 EVT_REMOTE     = pygame.USEREVENT + 6
 EVT_SYNC       = pygame.USEREVENT + 7
+EVT_STATUS     = pygame.USEREVENT + 8
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -262,6 +312,12 @@ def log_config():
         logger.warning(f"Config problem, using fallback: {problem}")
     source = CONFIG_FILE if CONFIG else "built-in defaults / environment"
     logger.info(f"Config from {source}: state={REMOTE_STATE_URL} media={REMOTE_MEDIA_DIR_URL}")
+    if not STATUS_URL:
+        logger.info("Status reports: off (status_url is empty)")
+    elif not STATUS_TOKEN:
+        logger.info("Status reports: off (no status_token in config.json)")
+    else:
+        logger.info(f"Status reports every {STATUS_INTERVAL_SEC}s: {STATUS_URL}")
 
 
 class AppState(Enum):
@@ -781,6 +837,213 @@ class SyncWorker:
                 return
 
 # ---------------------------------------------------------------------------
+# Status reports
+# ---------------------------------------------------------------------------
+
+
+def iso_utc(dt: datetime | None) -> str | None:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+
+def boot_id() -> str | None:
+    """Linux's ID for the current boot; a new one means the Pi restarted."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def uptime() -> float:
+    """Seconds since boot. Immune to the clock jumping when NTP catches up,
+    which the Pi's wall clock (no battery) does after every boot."""
+    clock = getattr(time, "CLOCK_BOOTTIME", None)
+    return time.clock_gettime(clock) if clock is not None else time.monotonic()
+
+
+class EventLog:
+    """
+    Things that happened at the Pi itself — button presses, cameras and USB
+    drives coming and going, files skipped, restarts — for the website's
+    activity list.
+
+    Every status report carries the newest EVENTS_KEEP events, and the website
+    adds the ones it hasn't seen, by sequence number. So a report that fails
+    loses nothing: the next one carries the same events again. Kept on disk, so
+    a restart during an internet outage doesn't lose them either.
+
+    Each event records the boot it happened in and the uptime when it did. The
+    website works out the real time from those, because the Pi's wall clock can
+    be wrong for a while after boot.
+    """
+
+    def __init__(self, path: str | None = None):
+        self.path = path or EVENTS_FILE
+        self.log_id = None        # identifies this log, so a reset is noticed
+        self.next_seq = 1
+        self.items = []
+        self.last_boot = None     # boot the player last ran in
+        self.load()
+
+    def load(self):
+        try:
+            data = json.loads(Path(self.path).read_text())
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError) as exc:
+            logger.warning(f"Could not read event log, starting a new one: {exc}")
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        self.log_id    = data.get("log_id") or os.urandom(8).hex()
+        self.next_seq  = int(data.get("next_seq") or 1)
+        self.items     = [e for e in data.get("items") or [] if isinstance(e, dict)][-EVENTS_KEEP:]
+        self.last_boot = data.get("last_boot")
+
+    def save(self):
+        data = {"log_id": self.log_id, "next_seq": self.next_seq,
+                "last_boot": self.last_boot, "items": self.items}
+        try:
+            path = Path(self.path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=1))
+            tmp.replace(path)
+        except OSError as exc:
+            logger.warning(f"Could not write event log: {exc}")
+
+    @property
+    def last_seq(self) -> int:
+        return self.next_seq - 1
+
+    def add(self, kind: str, detail: str = "", at: datetime | None = None,
+            up: float | None = None):
+        self.items.append({
+            "seq":    self.next_seq,
+            "kind":   kind,
+            "detail": detail,
+            "at":     iso_utc(at or utcnow()),
+            "boot":   boot_id(),
+            "uptime": round(up if up is not None else uptime(), 1),
+        })
+        self.items = self.items[-EVENTS_KEEP:]
+        self.next_seq += 1
+        self.save()
+        logger.info(f"Event: {kind} {detail}".rstrip())
+
+    def log_startup(self):
+        """'boot' when the Pi itself started, 'restart' when only the app did."""
+        current = boot_id()
+        if self.last_boot and current:
+            started_pi = current != self.last_boot
+        else:
+            started_pi = uptime() < BOOT_UPTIME_SEC
+        self.last_boot = current
+        if started_pi:
+            self.add("boot", "power-on or reboot")
+        else:
+            self.add("restart")
+
+    def report(self) -> dict:
+        return {"log_id": self.log_id, "boot": boot_id(),
+                "uptime": round(uptime(), 1), "items": list(self.items)}
+
+
+def post_status(report: dict, url: str | None = None, token: str | None = None) -> int:
+    """
+    POST one status report. Returns the HTTP status; raises on network errors
+    and on any non-2xx answer, with the server's reason when it sent one.
+
+    The token goes in its own header rather than Authorization, which some
+    shared hosts strip before PHP ever sees it.
+    """
+    body = json.dumps(report, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        url or STATUS_URL, data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "vrhs-lobby-player/2.0",
+            "X-Lobby-Token": STATUS_TOKEN if token is None else token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=REMOTE_TIMEOUT_SEC) as response:
+            return response.status
+    except urllib.error.HTTPError as exc:
+        reason = ""
+        try:
+            reason = json.loads(exc.read(4096)).get("error") or ""
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {exc.code}" + (f": {reason}" if reason else "")) from None
+
+
+class StatusReporter:
+    """
+    Sends status reports to the website on a background thread.
+
+    The main loop builds each report (only it may read the player's state) and
+    hands it over with submit(); this thread does the network part, so a slow
+    or dead website never stalls the screen. Only the newest report matters,
+    so one waiting to go is simply replaced by the next.
+    """
+
+    def __init__(self, initial_delay=STATUS_INITIAL_DELAY_SEC, min_gap=STATUS_MIN_GAP_SEC):
+        self.initial_delay = initial_delay
+        self.min_gap = min_gap
+        self._lock = threading.Lock()
+        self._pending = None
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread = None
+        self._accepted = False
+
+    def start(self):
+        self._thread = threading.Thread(
+            target=self._run, name="status-reporter", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._wake.set()
+
+    def submit(self, report: dict):
+        with self._lock:
+            self._pending = report
+        self._wake.set()
+
+    def _run(self):
+        if self._stop.wait(self.initial_delay):
+            return
+
+        failures = 0
+        while True:
+            self._wake.wait()
+            if self._stop.is_set():
+                return
+            self._wake.clear()
+            with self._lock:
+                report, self._pending = self._pending, None
+            if report is None:
+                continue
+
+            try:
+                post_status(report)
+                if failures:
+                    logger.info("Status reports reaching the website again.")
+                elif not self._accepted:
+                    logger.info("First status report accepted by the website.")
+                self._accepted = True
+                failures = 0
+            except Exception as exc:
+                failures += 1
+                if failures == 1 or failures % STATUS_FAILURE_LOG_EVERY == 0:
+                    logger.warning(f"Could not send status report (attempt {failures}): {exc}")
+
+            if self._stop.wait(self.min_gap):
+                return
+
+# ---------------------------------------------------------------------------
 # GPIO
 # ---------------------------------------------------------------------------
 
@@ -972,6 +1235,16 @@ def discover_videos() -> list[str]:
     return videos
 
 
+def mounted_usb_drives() -> list[str]:
+    """Labels of the USB drives mounted now. Only real mount points: a
+    leftover empty folder under /media/pi is not a drive."""
+    try:
+        return sorted(d.name for d in Path(USB_MOUNT_ROOT).iterdir()
+                      if d.is_dir() and os.path.ismount(d))
+    except OSError:
+        return []
+
+
 def is_webcam(path: str | None) -> bool:
     return bool(path) and path.startswith("/dev/")
 
@@ -991,6 +1264,14 @@ def usb_drive_name(path: str) -> str | None:
         return Path(path).relative_to(Path(USB_MOUNT_ROOT)).parts[0]
     except (ValueError, IndexError):
         return None
+
+
+def media_location(path: str) -> str:
+    """Where a path lives, as status reports name it: sd, usb:<drive>, webcam."""
+    if is_webcam(path):
+        return "webcam"
+    drive = usb_drive_name(path)
+    return f"usb:{drive}" if drive else "sd"
 
 
 def video_label(path: str) -> str:
@@ -1149,6 +1430,12 @@ class Player:
         self.failures = {}
         self.quarantined = set()
 
+        # What happened at the Pi itself, for the website's activity list.
+        self.events = EventLog()
+        self.known_camera = None      # None until the first rescan
+        self.known_drives = None
+        self.pending_pick = None      # button selection still settling
+
         self.needs_draw = False
 
     # -- persistence --------------------------------------------------------
@@ -1252,12 +1539,32 @@ class Player:
             self.quarantined.discard(path)
             self.failures.pop(path, None)
 
+        self._note_hardware()
+
         if not self.videos:
             self.selected = 0
         elif previously and previously in self.videos:
             self.selected = self.videos.index(previously)
         else:
             self.selected = min(self.selected, len(self.videos) - 1)
+
+    def _note_hardware(self):
+        """Log a webcam or USB drive appearing or disappearing. The first scan
+        only records what is there; startup is logged separately."""
+        camera = next((v for v in self.videos if is_webcam(v)), None)
+        drives = mounted_usb_drives()
+        if self.known_drives is not None:
+            if camera and not self.known_camera:
+                self.events.add("webcam_in", Path(camera).name)
+            elif self.known_camera and not camera:
+                self.events.add("webcam_out")
+            for drive in sorted(set(drives) - set(self.known_drives)):
+                count = sum(1 for v in self.videos if usb_drive_name(v) == drive)
+                self.events.add("usb_in", f"{drive} ({count} media file{'' if count == 1 else 's'})")
+            for drive in sorted(set(self.known_drives) - set(drives)):
+                self.events.add("usb_out", drive)
+        self.known_camera = camera
+        self.known_drives = drives
 
     # -- targets ------------------------------------------------------------
 
@@ -1411,7 +1718,7 @@ class Player:
         if getattr(self.mpv_proc, "returncode", None) == 0 and not camera_gone:
             logger.info("mpv quit from the keyboard. Returning to the menu.")
             self.mpv_proc = None
-            self.local_stop()
+            self.local_stop(how="keyboard")
             return
 
         path    = self.playing_path
@@ -1428,6 +1735,7 @@ class Player:
             if count >= MPV_MAX_FAILURES:
                 logger.error(f"Quarantining unplayable file: {path}")
                 self.quarantined.add(path)
+                self.events.add("skipped", source_name(path))
         elif path:
             self.failures.pop(path, None)
             logger.info(f"mpv exited after {ran_for:.0f}s. Reconciling.")
@@ -1447,23 +1755,44 @@ class Player:
             return
         self.selected = (self.selected + delta) % len(self.videos)
         if self.state == AppState.PLAYING:
-            self.play_selected()
+            self.play_selected(kind="switched")
         else:
             self.needs_draw = True
 
-    def play_selected(self):
+    def play_selected(self, kind="played"):
         if not self.videos:
             return
         path = self.videos[self.selected]
         logger.info(f"Local selection: {path}")
+        self.note_pick(kind, source_name(path))
         self.set_target(source_name(path), path=path, source=Source.LOCAL)
 
-    def local_stop(self):
+    def note_pick(self, kind: str, name: str):
+        """
+        A selection from the buttons. Held for PICK_SETTLE_SEC before it is
+        logged, so pressing NEXT four times to reach a video logs one event
+        naming where it landed, not four. The first press decides the kind.
+        """
+        if not self.pending_pick:
+            self.pending_pick = {"kind": kind}
+        self.pending_pick.update(name=name, last=time.monotonic(),
+                                 at=utcnow(), uptime=uptime())
+
+    def flush_pick(self, force: bool = False):
+        """Log a settled button selection. Called every frame by the main loop."""
+        pick = self.pending_pick
+        if pick and (force or time.monotonic() - pick["last"] >= PICK_SETTLE_SEC):
+            self.pending_pick = None
+            self.events.add(pick["kind"], pick["name"], at=pick["at"], up=pick["uptime"])
+
+    def local_stop(self, how: str = "EXIT button"):
         """
         EXIT button. This is an instruction in its own right — 'show nothing' —
         so it clears the target and wins until the remote state file changes.
         """
         logger.info("Local stop.")
+        self.flush_pick(force=True)
+        self.events.add("stopped", how)
         self.target_name   = None
         self.target_path   = None
         self.target_source = Source.LOCAL
@@ -1532,6 +1861,81 @@ class Player:
             return
 
         self.reconcile()
+
+    # -- status reports -----------------------------------------------------
+
+    def status_signature(self) -> tuple:
+        """Changes whenever a report would say something different about what
+        is on screen or available, so the website hears about it right away
+        instead of at the next interval."""
+        return (self.state, self.playing_path, self.using_fallback,
+                self.target_name, tuple(self.videos), frozenset(self.quarantined),
+                self.events.last_seq)
+
+    def status_report(self) -> dict:
+        """What the website's admin page shows about this player."""
+        playing = self.playing_path if self.state == AppState.PLAYING else None
+        if playing is None:
+            mode = "menu"
+        elif is_webcam(playing):
+            mode = "webcam"
+        else:
+            mode = "playing"
+
+        media = []
+        for path in self.videos:
+            if is_webcam(path):
+                continue
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            media.append({
+                "name":        Path(path).name,
+                "location":    media_location(path),
+                "kind":        "image" if is_image(path) else "video",
+                "bytes":       info.st_size,
+                "modified":    iso_utc(datetime.fromtimestamp(info.st_mtime, timezone.utc)),
+                "unplayable":  path in self.quarantined,
+            })
+
+        cameras = [v for v in self.videos if is_webcam(v)]
+        try:
+            free = shutil.disk_usage(VIDEO_DIR).free
+        except OSError:
+            free = None
+
+        return {
+            "version":  STATUS_SCHEMA_VERSION,
+            "sent_at":  iso_utc(utcnow()),
+            "interval": STATUS_INTERVAL_SEC,
+            "player": {
+                "mode":          mode,
+                "showing":       source_name(playing) if playing else None,
+                "location":      media_location(playing) if playing else None,
+                "fallback":      bool(playing) and self.using_fallback,
+                "wanted":        self.target_name,
+                "wanted_from":   self.target_source.value,
+                "wanted_since":  iso_utc(self.target_set_at),
+            },
+            "webcam": {
+                "available":  bool(cameras),
+                "device":     Path(cameras[0]).name if cameras else None,
+                "unplayable": bool(cameras) and cameras[0] in self.quarantined,
+                "mode":       " ".join(v for v in (WEBCAM_SIZE, WEBCAM_FORMAT) if v) or None,
+            },
+            "media": media,
+            "disk_free_bytes": free,
+            "remote": {
+                "checked_at": iso_utc(self.remote_checked_at),
+                "error":      self.remote_error,
+            },
+            "sync": {
+                "checked_at": iso_utc(self.sync_checked_at),
+                "error":      self.sync_error,
+            },
+            "events": self.events.report(),
+        }
 
     # -- rendering ----------------------------------------------------------
 
@@ -1791,6 +2195,7 @@ def main():
 
     player.rescan()
     player.load_state()
+    player.events.log_startup()
 
     player.resume_on_startup()
 
@@ -1803,6 +2208,12 @@ def main():
     syncer = SyncWorker() if SYNC_ENABLED else None
     if syncer:
         syncer.start()
+
+    reporter = StatusReporter() if STATUS_URL and STATUS_TOKEN else None
+    if reporter:
+        reporter.start()
+        pygame.time.set_timer(EVT_STATUS, STATUS_INTERVAL_SEC * 1000)
+    last_signature = None
 
     pygame.time.set_timer(pygame.USEREVENT, MPV_POLL_INTERVAL_MS)
     pygame.time.set_timer(EVT_RESCAN, RESCAN_INTERVAL_MS)
@@ -1832,6 +2243,10 @@ def main():
             elif event.type == EVT_REMOTE:
                 player.handle_remote(event.instruction, event.error)
 
+            elif event.type == EVT_STATUS:
+                if reporter:
+                    reporter.submit(player.status_report())
+
             elif event.type == EVT_SYNC:
                 player.handle_sync({
                     "downloaded": event.downloaded,
@@ -1857,8 +2272,10 @@ def main():
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_q:
                     if player.state == AppState.PLAYING:
-                        player.local_stop()
+                        player.local_stop(how="keyboard")
                     else:
+                        player.flush_pick(force=True)
+                        player.events.add("quit", "keyboard")
                         running = False
                 elif event.key == pygame.K_UP and player.state == AppState.MENU:
                     player.step_selection(-1)
@@ -1871,11 +2288,22 @@ def main():
             player.render()
             player.needs_draw = False
 
+        player.flush_pick()
+
+        # Report a change on screen now rather than at the next interval.
+        if reporter:
+            signature = player.status_signature()
+            if signature != last_signature:
+                last_signature = signature
+                reporter.submit(player.status_report())
+
         clock.tick(30)
 
     watcher.stop()
     if syncer:
         syncer.stop()
+    if reporter:
+        reporter.stop()
     kill_mpv(player.mpv_proc)
     cleanup_gpio()
     pygame.quit()

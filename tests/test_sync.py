@@ -10,6 +10,7 @@ Run with:  python3 tests/test_sync.py
 """
 import os
 import sys
+import json
 import time
 import shutil
 import logging
@@ -147,6 +148,52 @@ try:
     result = vp.sync_once(os.path.join(local, "does-not-exist"))
     r.check("refused to run", len(result["errors"]) > 0, True)
     r.check("downloaded nothing", result["downloaded"], [])
+
+    print("\n=== status reports POST JSON with the token ===")
+    received = []
+
+    class StatusHandler(QuietHandler):
+        def do_POST(self):
+            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            received.append((self.headers.get("X-Lobby-Token"),
+                             self.headers.get("Content-Type"), json.loads(body)))
+            ok = self.headers.get("X-Lobby-Token") == "s3cret"
+            reply = json.dumps({"ok": ok} if ok else {"ok": False, "error": "wrong token"}).encode()
+            self.send_response(200 if ok else 403)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+    status_httpd = ThreadingHTTPServer(("127.0.0.1", 0), StatusHandler)
+    threading.Thread(target=status_httpd.serve_forever, daemon=True).start()
+    status_url = f"http://127.0.0.1:{status_httpd.server_address[1]}/lobby/status.php"
+    try:
+        code = vp.post_status({"version": 1, "media": []}, url=status_url, token="s3cret")
+        r.check("accepted", code, 200)
+        r.check("sent token, JSON and the report", received[-1],
+                ("s3cret", "application/json", {"version": 1, "media": []}))
+        try:
+            vp.post_status({"version": 1}, url=status_url, token="nope")
+            r.check("wrong token raises", False, True)
+        except RuntimeError as exc:
+            r.check("wrong token raises with the server's reason", str(exc), "HTTP 403: wrong token")
+
+        # The reporter thread sends only the newest report.
+        vp.STATUS_URL, vp.STATUS_TOKEN = status_url, "s3cret"
+        received.clear()
+        reporter = vp.StatusReporter(initial_delay=0.3, min_gap=0)
+        reporter.submit({"n": 1})
+        reporter.submit({"n": 2})
+        reporter.start()
+        deadline = time.time() + 5
+        while not received and time.time() < deadline:
+            time.sleep(0.05)
+        reporter.stop()
+        r.check("reporter sent only the newest report", [b for _, _, b in received], [{"n": 2}])
+    finally:
+        status_httpd.shutdown()
+        status_httpd.server_close()
 
 finally:
     httpd.shutdown()

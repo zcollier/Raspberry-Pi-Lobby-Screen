@@ -6,7 +6,8 @@ which one plays on the VRHS lobby screen.
 You are building the **web half** of an existing system. A Raspberry Pi in the
 school lobby already runs a Python video player that polls this website. It
 cannot accept inbound connections, so everything is driven by two files this web
-app writes to disk. Get these two contracts right and the Pi does the rest.
+app writes to disk. Get these two contracts right and the Pi does the rest. The
+Pi also POSTs a status report back (§11), which is information only.
 
 **Target stack:** Dreamhost LAMP — PHP, MySQL, HTML, CSS, JavaScript. No
 frameworks, no Composer packages, no CDN-loaded libraries. Everything must work
@@ -16,12 +17,13 @@ from the standard PHP install.
 
 ## 1. The system you are integrating with
 
-Two URLs form the entire interface:
+Two URLs control the screen, and a third reports on it:
 
 | URL | What it is | Who writes it |
 |-----|------------|---------------|
 | `https://vrhstheatre.com/lobby/state.json` | Says which file should be playing | **Your app** |
 | `https://vrhstheatre.com/lobby/video/` | Directory of media files | **Your app** (uploads) |
+| `https://vrhstheatre.com/lobby/status.php` | Receives the Pi's status report (§11) | **The Pi** (POST) |
 
 The Pi does this on a loop, forever:
 
@@ -297,9 +299,9 @@ So the interface tells the truth about what will happen:
   newly uploaded file can take up to 5 minutes plus download time. Show both
   expectations rather than implying it's instant.
 - **The Pi may disagree with the website.** Someone may have pressed a button in
-  the lobby since your last write. Your app cannot observe that — the Pi never
-  reports back. Don't claim to display "what is playing now"; label it "last
-  selection sent from this site."
+  the lobby since your last write. Label what `state.json` says as "last
+  selection sent from this site", and show what is actually on screen from the
+  Pi's status report (§11) — marked stale once reports stop arriving.
 - **Disk space.** The Pi refuses any download that would leave under 1 GB free,
   and refuses files over 8 GB. Showing the total size of `/lobby/video/` helps
   users avoid overrunning the SD card.
@@ -451,3 +453,89 @@ curl -sI 'https://vrhstheatre.com/lobby/video/default.mov' \
 The authoritative implementation is `video-player.py` in this repository —
 `parse_remote_payload()` and `is_safe_filename()` define the validation rules,
 and `sync_once()` defines the sync behavior.
+
+---
+
+## 11. Status reports from the Pi
+
+The Pi POSTs a JSON report to `status_url` (default
+`https://vrhstheatre.com/lobby/status.php`) every `status_interval` seconds
+(default 60), and again within about 5 seconds whenever what is on screen,
+the file list, or the webcam changes. Both are set in the Pi's `config.json`.
+Reports are information only: the response is never read for instructions, and
+a failure changes nothing on screen.
+
+**Authentication.** The request carries `X-Lobby-Token: <status_token>`. The
+server compares it with `LOBBY_STATUS_TOKEN` (in `secrets.php`) using
+`hash_equals` and answers 403 on a mismatch, 503 if the server has no token set.
+No reports are sent while the Pi's `status_token` is empty. A custom header,
+not `Authorization`, because some hosts strip that before PHP sees it.
+
+**Body** (`Content-Type: application/json`, under 256 KB):
+
+```json
+{
+  "version": 1,
+  "sent_at": "2026-10-07T18:00:00Z",
+  "interval": 60,
+  "player": {
+    "mode": "playing",
+    "showing": "show.mov",
+    "location": "sd",
+    "fallback": false,
+    "wanted": "show.mov",
+    "wanted_from": "remote",
+    "wanted_since": "2026-10-07T17:58:12Z"
+  },
+  "webcam": { "available": true, "device": "usb-Cam-video-index0", "unplayable": false, "mode": "1920x1080 mjpeg" },
+  "media": [
+    { "name": "show.mov", "location": "sd", "kind": "video", "bytes": 1234567,
+      "modified": "2026-10-01T12:00:00Z", "unplayable": false }
+  ],
+  "disk_free_bytes": 52000000000,
+  "remote": { "checked_at": "2026-10-07T17:59:55Z", "error": null },
+  "sync":   { "checked_at": "2026-10-07T17:55:20Z", "error": null },
+  "events": {
+    "log_id": "291e941960fd0c61",
+    "boot": "6f1c…",
+    "uptime": 1060.0,
+    "items": [
+      { "seq": 41, "kind": "played", "detail": "A.mp4", "at": "2026-10-07T17:58:02Z",
+        "boot": "6f1c…", "uptime": 990.0 }
+    ]
+  }
+}
+```
+
+- `player.mode` is `playing` (a file), `webcam`, or `menu` (nothing playing —
+  someone pressed EXIT). `showing` is the name on screen (`"webcam"` when live).
+- `fallback: true` means `wanted` isn't available, so `showing` is a stand-in.
+- `wanted_from` is `remote`, `local` (buttons), or `fallback`.
+- `location` is `sd`, `usb:<drive label>`, or `webcam`. Only `sd` files came
+  from (or can be matched to) `/lobby/video/`.
+- `media` lists only complete files: downloads land in a hidden `.part` file
+  first. `unplayable: true` means mpv failed on it three times running.
+- `sent_at` comes from the Pi's clock, which has no battery backup. Store and
+  display the **server's** receive time instead.
+
+**`events`: things done at the Pi itself.** The newest 50 events, resent in
+every report, so a failed report loses nothing. `kind` is one of `played`
+(PLAY button), `switched` (PREV/NEXT while playing), `stopped` (detail
+`EXIT button` or `keyboard`), `webcam_in` / `webcam_out`, `usb_in` / `usb_out`
+(detail: drive label), `skipped` (failed three times), `boot` (the Pi started),
+`restart` (only the app did), and `quit` (closed from the keyboard). Button
+presses within 10 seconds of each other become one event naming where they
+landed. Selections made from the website are not included, since the site
+already logs those.
+
+- An event is new when its `seq` is above the highest the server has copied
+  for this `log_id`. A new `log_id` means the Pi started a fresh log.
+- Timing: if an event's `boot` matches the report's, it happened
+  `uptime − event.uptime` seconds before the report arrived. That stays right
+  even when the Pi's clock is wrong. Otherwise use `at`, unless `at` is in the
+  future.
+
+The server answers `{"ok": true}`, or `{"ok": false, "error": "…"}` with a
+4xx/5xx status; the Pi logs the error (backed off to about once per half hour
+during an outage).
+

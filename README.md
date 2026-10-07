@@ -487,6 +487,34 @@ A missing setting falls back to the `REMOTE_STATE_URL` / `REMOTE_MEDIA_DIR_URL`
 environment variables, then to the defaults below. A broken file is logged as a
 `Config problem` and the player keeps running on the fallbacks.
 
+### Status reports — `status_url`, `status_token`, `status_interval`
+
+The player POSTs its status to the website so the **Lobby TVs** admin page can
+show what is on screen, which files the Pi has, and whether a webcam is plugged
+in. It is outbound, like everything else; the website never contacts the Pi.
+
+```json
+{
+  "status_url": "https://vrhstheatre.com/lobby/status.php",
+  "status_token": "<same value as LOBBY_STATUS_TOKEN in the website's secrets.php>",
+  "status_interval": 60
+}
+```
+
+- `status_interval` is in seconds (10–3600, default 60). A change on screen,
+  in the file list, or to the webcam is also reported within about 5 seconds.
+- Nothing is sent while `status_token` is empty; `"status_url": ""` turns
+  reports off explicitly. Make a token with `openssl rand -hex 24`.
+- Failures never affect playback. Check them with
+  `sudo journalctl -u video-player -b | grep -i status`.
+- Reports also carry what happened at the Pi itself: button presses (several
+  quick ones become one entry), EXIT, the webcam and USB drives being plugged in
+  or removed, files skipped after failing three times, and restarts (the Pi
+  booting vs. only the app restarting). They appear in the admin page's
+  **Recent activity**. Kept in `~/.config/video-player/events.json` (the newest
+  50) until the website has them.
+- The report format is in `WEB-ADMIN-SPEC.md` §11.
+
 ### Live webcam
 
 Plug a USB webcam into the Pi and a **[Live] Webcam** entry appears at the end

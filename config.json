@@ -2,5 +2,8 @@
   "state_url": "https://vrhstheatre.com/lobby/state.json",
   "media_url": "https://vrhstheatre.com/lobby/video/",
   "webcam_size": "1920x1080",
-  "webcam_format": "mjpeg"
+  "webcam_format": "mjpeg",
+  "status_url": "https://vrhstheatre.com/lobby/status.php",
+  "status_token": "",
+  "status_interval": 60
 }

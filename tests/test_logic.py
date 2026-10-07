@@ -282,4 +282,36 @@ r.check("webcam settings read", settings, {"webcam_size": "1920x1080", "webcam_f
 settings, problems = vp.load_config(write_cfg(json.dumps({"webcam_size": "1080p", "webcam_format": "MJPEG!"})))
 r.check("bad webcam settings rejected", (settings, len(problems)), ({}, 2))
 
+print("\n=== status report settings ===")
+settings, problems = vp.load_config(write_cfg(json.dumps({
+    "status_url": "https://example.org/lobby/status.php",
+    "status_token": "abc123-XYZ",
+    "status_interval": 120,
+})))
+r.check("status settings read", settings, {
+    "status_url": "https://example.org/lobby/status.php",
+    "status_token": "abc123-XYZ",
+    "status_interval": 120,
+})
+r.check("     no problems", problems, [])
+settings, problems = vp.load_config(write_cfg(json.dumps({"status_url": ""})))
+r.check("empty status_url means off", (settings, problems), ({"status_url": ""}, []))
+settings, problems = vp.load_config(write_cfg(json.dumps({
+    "status_url": "vrhstheatre.com/lobby/status.php",
+    "status_token": "has a space",
+    "status_interval": 2,
+})))
+r.check("bad status settings rejected", (settings, len(problems)), ({}, 3))
+for bad in (True, "60", 99999):
+    settings, problems = vp.load_config(write_cfg(json.dumps({"status_interval": bad})))
+    r.check(f"status_interval {bad!r} rejected", (settings, len(problems)), ({}, 1))
+r.check("default interval is a minute", vp.DEFAULT_STATUS_INTERVAL_SEC, 60)
+
+os.environ["VIDEO_PLAYER_CONFIG"] = write_cfg(json.dumps({"status_token": "t0k", "status_interval": 30}))
+configured = load_player()
+del os.environ["VIDEO_PLAYER_CONFIG"]
+r.check("player uses file's status settings",
+        (configured.STATUS_URL, configured.STATUS_TOKEN, configured.STATUS_INTERVAL_SEC),
+        ("https://vrhstheatre.com/lobby/status.php", "t0k", 30))
+
 r.finish("test_logic")

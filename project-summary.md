@@ -1,6 +1,6 @@
 # Project Summary — VRHS Lobby Screen
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 Digital signage for the VRHS lobby monitors. A Raspberry Pi 4 plays video on an
 HDMI display and is controlled three ways: physical buttons in the lobby, a JSON
@@ -25,10 +25,17 @@ from that website.
 | Automatic media sync (`/lobby/video/`) | Built and tested; verified against the new site |
 | USB webcam live source | **Working on the Pi** at 1920x1080 MJPEG; latency fix deployed 2026-10-06 |
 | Web upload/admin app | Ported to the `vrhstheatre.com` repo and committed there (`33e9ffd`) |
-| Git | Everything deployed is committed (webcam `b99992a`, latency fix 2026-10-06) |
+| Git | Everything deployed is committed (webcam `b99992a`, latency fix 2026-10-06, `7053596`) |
+| Status reports to the website | **Built and tested 2026-10-07; Pi side committed, website side not; not deployed** |
 
 ### Progress log
 
+- **2026-10-07** — Status reports: the Pi POSTs what's on screen, its files, and
+  webcam presence to `lobby/status.php` every `status_interval` seconds (and on
+  any change); `admin/lobby.php` shows it. Later the same day: reports also
+  carry an event log of button presses, webcam/USB plug and unplug, skipped
+  files and restarts, shown in the admin page's Recent activity. Pi side committed
+  2026-10-07; website side uncommitted; neither deployed. Details below.
 - **2026-10-06 (later)** — Admin page (`../vrhstheatre.com/admin/lobby.php`)
   gets a "Live webcam" card that sends `"video": "webcam"`. The player now falls
   back to the **most recent video** (not the default) while the webcam is
@@ -57,6 +64,74 @@ from that website.
   complete and tested against the live server. GPIO buttons reported broken.
 - **2026-08-12** — Commit `e8512e2`: player restructure, remote selection, media
   sync, three test suites, `lobby-check`, and `WEB-ADMIN-SPEC.md`.
+
+---
+
+## Session 2026-10-07 — status reports back to the website
+
+The Pi still accepts nothing inbound; it now also POSTs a status report out.
+
+**Pi side (`video-player.py`):**
+
+- `config.json` gains `status_url` (default
+  `https://vrhstheatre.com/lobby/status.php`; `""` = off), `status_token`
+  (sent as `X-Lobby-Token`; **nothing is sent while it is empty**) and
+  `status_interval` (seconds, 10–3600, default 60). Invalid values are logged
+  as `Config problem` like the others. Startup logs `Status reports every …` or
+  why they're off.
+- `Player.status_report()` (main thread only) builds the report: mode
+  (`playing` / `webcam` / `menu`), what's showing and from where, fallback and
+  what was wanted, webcam present/device/quarantined, every complete file with
+  location (`sd` / `usb:<label>`), size, mtime, quarantine flag, SD free space,
+  and the last state-poll / sync errors. Format: `WEB-ADMIN-SPEC.md` §11.
+- `StatusReporter` thread does the POST, keeping only the newest report, with a
+  10 s boot delay, a 5 s minimum gap, and outage logging backed off to ~30 min.
+  An `EVT_STATUS` pygame timer submits a report each interval; the main loop
+  also submits immediately when `status_signature()` changes (state, playing
+  path, fallback, target, file list, quarantine).
+- Tests: config parsing (test_logic), report contents incl. webcam unplug and
+  EXIT (test_scenarios Scenario 18), real POSTs + token rejection + "newest
+  only" (test_sync). All pass.
+
+**Event log (activity at the Pi).** `EventLog` keeps the newest 50 events in
+`~/.config/video-player/events.json` (`log_id`, `next_seq`, `last_boot`,
+`items`), and every report resends them. The website copies the ones above
+the highest `seq` it has seen for that `log_id` into `admin-log.json` as
+"Lobby player".
+
+- Logged: `played` (PLAY), `switched` (PREV/NEXT while playing), `stopped`
+  (EXIT button or keyboard `q`), `quit` (`q` on the menu), `webcam_in`/`_out`,
+  `usb_in`/`_out` (real mount points only, so the stale `Samsung128` folder
+  doesn't count), `skipped` (quarantined), `boot` / `restart`. Selections from
+  the website aren't logged here; the site logs them itself.
+- Button picks settle for 10 s (`PICK_SETTLE_SEC`) before being logged, so
+  pressing NEXT repeatedly becomes one entry naming where it landed. EXIT
+  flushes a pending pick first.
+- Boot vs. app restart: a changed `/proc/sys/kernel/random/boot_id`. On the
+  first run with no saved ID it falls back to uptime under 5 minutes.
+- Each event stores its boot ID and uptime, and the server times it as
+  "uptime-difference seconds before arrival", which is correct even when the
+  Pi's clock is wrong after boot. An event from an earlier boot uses the Pi's
+  wall time unless that time is in the future.
+- Tests: Scenario 19 (startup kinds, settling, EXIT flush, webcam/USB, skip,
+  bounded and persisted log, signature). Checked end to end against the PHP
+  endpoint: wrong Pi clock, resends not duplicated, a fresh `log_id`, and late
+  events sorted into place.
+
+**Website side** (`../vrhstheatre.com`, uncommitted): `lobby/status.php`
+endpoint, `lobby/player-status.json` storage (denied in `.htaccess`),
+`LOBBY_STATUS_TOKEN` in `secrets.php`, and a "lobby player right now" card,
+webcam badge and per-file "On the player" badges on `admin/lobby.php`. Tested
+locally under `php -S` with the real Python reporter posting to it.
+
+**To deploy:** (1) upload the website files; (2) add
+`define('LOBBY_STATUS_TOKEN', '…');` to the server's `secrets.php` (make one
+with `openssl rand -hex 24`); (3) add `status_token` with the same value to the
+Pi's `config.json` — **edit the Pi's copy; don't overwrite it with the repo's**,
+which has a blank token; (4) copy
+`video-player.py` and run the deploy icon. Then
+`journalctl -u video-player -b | grep -i status` should show
+`First status report accepted by the website.`
 
 ---
 
@@ -222,13 +297,15 @@ Everything is driven by the Pi reaching *out*:
 ```
                     vrhstheatre.com
                     ├── /lobby/state.json     "play this file"
-                    └── /lobby/video/         media files to mirror
+                    ├── /lobby/video/         media files to mirror
+                    └── /lobby/status.php     the Pi's status reports (POST)
                               ▲
                               │ outbound HTTPS only
                               │
    [ Raspberry Pi ] ──────────┘
      ├── every 15s   : fetch state.json, act if it changed
      ├── every 5 min : mirror /lobby/video/ into /home/pi/videos/
+     ├── every 1 min : POST status to /lobby/status.php (and on any change)
      ├── every 5s    : rescan local files (SD card + USB drives)
      └── GPIO buttons: EXIT / PREV / NEXT / PLAY
 ```
@@ -489,7 +566,7 @@ they were checked against fake gpiozero/RPi.GPIO modules during the session.
 |------|---------|
 | `video-player.py` | The player — menu, GPIO, remote polling, media sync, mpv control |
 | `video-player.service` | Systemd unit (`Restart=always`, `RestartSec=60`) |
-| `config.json` | Website URLs (`state_url`, `media_url`), read in place on the Pi |
+| `config.json` | Website URLs (`state_url`, `media_url`), webcam mode, status reports (`status_url`, `status_token`, `status_interval`); read in place on the Pi |
 | `install.sh` | Installer; safe to re-run, restarts a running service |
 | `deploy.sh` | One-click deploy, run from the desktop icon |
 | `deploy-video-player.desktop` | "Deploy Video Player" desktop launcher |
