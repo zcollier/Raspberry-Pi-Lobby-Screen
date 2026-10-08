@@ -26,7 +26,7 @@ from that website.
 | USB webcam live source | **Working on the Pi** at 1920x1080 MJPEG; latency fix deployed 2026-10-06 |
 | Web upload/admin app | Ported to the `vrhstheatre.com` repo and committed there (`33e9ffd`) |
 | Git | Everything deployed is committed (webcam `b99992a`, latency fix 2026-10-06, `7053596`) |
-| Status reports to the website | **Built and tested 2026-10-07; Pi side committed, website side not; not deployed** |
+| Status reports to the website | **Built and tested 2026-10-07; committed in both repos (`a2aad26` here, website `b596dfb`); not deployed** |
 
 ### Progress log
 
@@ -35,7 +35,7 @@ from that website.
   any change); `admin/lobby.php` shows it. Later the same day: reports also
   carry an event log of button presses, webcam/USB plug and unplug, skipped
   files and restarts, shown in the admin page's Recent activity. Pi side committed
-  2026-10-07; website side uncommitted; neither deployed. Details below.
+  2026-10-07 (`a2aad26`), website side in `b596dfb`; neither deployed. Details below.
 - **2026-10-06 (later)** — Admin page (`../vrhstheatre.com/admin/lobby.php`)
   gets a "Live webcam" card that sends `"video": "webcam"`. The player now falls
   back to the **most recent video** (not the default) while the webcam is
@@ -118,7 +118,7 @@ the highest `seq` it has seen for that `log_id` into `admin-log.json` as
   endpoint: wrong Pi clock, resends not duplicated, a fresh `log_id`, and late
   events sorted into place.
 
-**Website side** (`../vrhstheatre.com`, uncommitted): `lobby/status.php`
+**Website side** (`../vrhstheatre.com`, committed in `b596dfb`): `lobby/status.php`
 endpoint, `lobby/player-status.json` storage (denied in `.htaccess`),
 `LOBBY_STATUS_TOKEN` in `secrets.php`, and a "lobby player right now" card,
 webcam badge and per-file "On the player" badges on `admin/lobby.php`. Tested
