@@ -1,6 +1,6 @@
 # Project Summary — VRHS Lobby Screen
 
-Last updated: 2026-10-07
+Last updated: 2026-10-14
 
 Digital signage for the VRHS lobby monitors. A Raspberry Pi 4 plays video on an
 HDMI display and is controlled three ways: physical buttons in the lobby, a JSON
@@ -25,11 +25,15 @@ from that website.
 | Automatic media sync (`/lobby/video/`) | Built and tested; verified against the new site |
 | USB webcam live source | **Working on the Pi** at 1920x1080 MJPEG; latency fix deployed 2026-10-06 |
 | Web upload/admin app | Ported to the `vrhstheatre.com` repo and committed there (`33e9ffd`) |
-| Git | Everything deployed is committed (webcam `b99992a`, latency fix 2026-10-06, `7053596`) |
-| Status reports to the website | **Built and tested 2026-10-07; committed in both repos (`a2aad26` here, website `b596dfb`); not deployed** |
+| Git | Everything is committed and pushed; `main` matches GitHub as of 2026-10-14 (latest `10b5bfa`) |
+| Status reports to the website | **Built and tested 2026-10-07; committed and pushed in both repos (`a2aad26` here, website `b596dfb`); not deployed** |
 
 ### Progress log
 
+- **2026-10-14** — No code changes. Status-report work is committed and pushed
+  in both repos (here `a2aad26` + summary `10b5bfa`; website `b596dfb`). Next
+  step is deploying it, using the steps under "To deploy" in the 2026-10-07
+  section. Both working trees are clean.
 - **2026-10-07** — Status reports: the Pi POSTs what's on screen, its files, and
   webcam presence to `lobby/status.php` every `status_interval` seconds (and on
   any change); `admin/lobby.php` shows it. Later the same day: reports also
